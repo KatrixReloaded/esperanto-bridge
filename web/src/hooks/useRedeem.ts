@@ -17,9 +17,9 @@ const LOCKED = new Set<Phase>(['preparing', 'wallet', 'confirming', 'tracking', 
 
 export function useRedeem(balance: Balance, bridge: BridgeInfoState, wallet: Wallet) {
   const [amt, setAmt] = useState('')
-  const [z, setZ] = useState('')
+  const [destination, setDestination] = useState('')
   const [amtErr, setAmtErr] = useState('')
-  const [zErr, setZErr] = useState('')
+  const [destinationErr, setDestinationErr] = useState('')
   const [idInput, setIdInput] = useState('')
   const [idErr, setIdErr] = useState('')
   const [manualId, setManualId] = useState<string | null>(null)
@@ -56,8 +56,8 @@ export function useRedeem(balance: Balance, bridge: BridgeInfoState, wallet: Wal
 
   return {
     amt: locked ? formatAtomic(intent!.terms!.amountAtomic) : amt,
-    z: locked ? intent!.terms!.destination : z,
-    amtErr, zErr, idInput, idErr, trackedId, status, phase, intent, receipt, blockReason, locked,
+    destination: locked ? intent!.terms!.destination : destination,
+    amtErr, destinationErr, idInput, idErr, trackedId, status, phase, intent, receipt, blockReason, locked,
     fromFlow: !!flowId,
     amountAtomic: locked ? BigInt(intent!.terms!.amountAtomic) : amtErr ? null : parseXmr(amt),
 
@@ -68,13 +68,13 @@ export function useRedeem(balance: Balance, bridge: BridgeInfoState, wallet: Wal
       if (amtErr) setAmtErr(amountError(v, minAtomic, known))
     },
     blurAmount: () => setAmtErr(amountError(amt, minAtomic, known)),
-    editZ(v: string) {
+    editDestination(v: string) {
       v = stripSpaces(v)
-      setZ(v)
+      setDestination(v)
       edited()
-      if (zErr) setZErr(destinationError(v))
+      if (destinationErr) setDestinationErr(destinationError(v))
     },
-    blurZ: () => setZErr(destinationError(z)),
+    blurDestination: () => setDestinationErr(destinationError(destination)),
     max() {
       if (known == null) return
       setAmt(formatAtomic(known))
@@ -84,24 +84,24 @@ export function useRedeem(balance: Balance, bridge: BridgeInfoState, wallet: Wal
     /** Sets field errors (including "required") and returns whether the form can be submitted. */
     validate() {
       const ae = amountError(amt, minAtomic, known) || (amt.trim() ? '' : 'Enter an amount.')
-      const ze = destinationError(z) || (z.trim() ? '' : 'Enter a Monero address.')
+      const de = destinationError(destination) || (destination.trim() ? '' : 'Enter a Monero address.')
       setAmtErr(ae)
-      setZErr(ze)
-      return !ae && !ze && !blockReason && !flow.current!.busy
+      setDestinationErr(de)
+      return !ae && !de && !blockReason && !flow.current!.busy
     },
     /** Explicit user action only. */
     start() {
       const n = parseXmr(amt)
       if (n == null || blockReason) return
-      flow.current!.start({ amountAtomic: n.toString(), destination: z.trim(), feeTermsHash: info!.fee_terms_hash as Hex, eligibleVaults: info!.eligible_vaults as Hex[] })
+      flow.current!.start({ amountAtomic: n.toString(), destination: destination.trim(), feeTermsHash: info!.fee_terms_hash as Hex, eligibleVaults: info!.eligible_vaults as Hex[] })
     },
     retry: () => !blockReason && flow.current!.retry(),
     reset() {
       flow.current!.reset()
       setAmt('')
-      setZ('')
+      setDestination('')
       setAmtErr('')
-      setZErr('')
+      setDestinationErr('')
     },
 
     editId(v: string) {

@@ -9,9 +9,10 @@ export function useDeposit(wallet: Wallet, bridge: BridgeInfoState) {
   const [issued, setIssued] = useState<DepositIntent | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [savedIntentId, setSavedIntentId] = useState('')
   const current = useRef({ recipient: wallet.address, generation: 0, nonce: '' })
   if (current.current.recipient !== wallet.address) current.current = { recipient: wallet.address, generation: current.current.generation + 1, nonce: '' }
-  useEffect(() => { setIssued(null); setError(''); setBusy(false) }, [wallet.address])
+  useEffect(() => { setIssued(null); setError(''); setBusy(false); setSavedIntentId('') }, [wallet.address])
   const own = issued?.recipient.toLowerCase() === wallet.address?.toLowerCase() ? issued : null
   const status = usePoll(own?.intentId ?? null, async (id, signal) => {
     const result = await api.getDepositIntent(id, signal)
@@ -19,7 +20,27 @@ export function useDeposit(wallet: Wallet, bridge: BridgeInfoState) {
     return result
   })
   const blockReason = !DEMO ? LIVE_BLOCKER : !bridge.info?.scanner_ready ? 'Bridge unavailable.' : !wallet.connected ? 'Connect a Sepolia wallet.' : ''
-  return { issued: own, status, busy, error, blockReason,
+  return { issued: own, status, busy, error, blockReason, savedIntentId,
+    editSavedIntentId: (value: string) => { setSavedIntentId(value.trim()); setError('') },
+    async resume() {
+      if (busy || blockReason || !wallet.address) return
+      if (!/^0x[0-9a-fA-F]{64}$/.test(savedIntentId)) {
+        setError('Enter your private deposit intent ID (0x followed by 64 hexadecimal characters).')
+        return
+      }
+      const { generation } = current.current
+      const recipient = wallet.address
+      setBusy(true); setError('')
+      try {
+        const intent = await api.getDepositIntent(savedIntentId)
+        if (intent.recipient.toLowerCase() !== recipient.toLowerCase()) throw new Error('Recipient mismatch')
+        if (current.current.generation === generation) { setIssued(intent); setSavedIntentId('') }
+      } catch {
+        if (current.current.generation === generation) setError('Could not restore this deposit. Check the intent ID and connect its recipient wallet.')
+      } finally {
+        if (current.current.generation === generation) setBusy(false)
+      }
+    },
     async create() {
       if (busy || blockReason || !wallet.address) return
       const state = current.current, generation = state.generation

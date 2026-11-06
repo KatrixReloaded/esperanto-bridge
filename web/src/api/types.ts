@@ -5,7 +5,7 @@ export interface BridgeInfo {
   scanner_ready: boolean; readiness_reason: string; persisted: { halted: boolean }
 }
 export interface Health { runtime: string; native_development: boolean; bridge_actions_enabled: boolean; required_gates: string[] }
-export type DepositStatus = 'awaiting_deposit' | 'confirming' | 'proving' | 'minting' | 'minted' | 'quarantined' | (string & {})
+export type DepositStatus = 'awaiting_deposit' | 'confirming' | 'proving' | 'minting' | 'minted' | 'failed' | 'quarantined' | (string & {})
 export interface DepositIntent {
   intentId: string; vaultId: string; recipient: string; depositAddress: string; network: 'stagenet'; status: DepositStatus
 }

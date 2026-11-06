@@ -7,7 +7,12 @@ export const DEPOSIT_STEPS = ['Awaiting deposit', 'Confirming', 'Proving', 'Mint
 export const REDEEM_STEPS = ['Requested', 'Assigned', 'Settled']
 export function depositStage(d: DepositIntent): Stage {
   const step = ['awaiting_deposit', 'confirming', 'proving', 'minting'].indexOf(d.status)
-  if (step >= 0) return { kind: 'progress', step, detail: step === 0 ? 'Only send stagenet XMR to this issued address.' : 'Waiting for the bridge. Do not create a duplicate deposit.' }
+  if (step >= 0) return { kind: 'progress', step, detail: [
+    'Send stagenet XMR from your Monero wallet to this address. No memo or payment ID is needed.',
+    'Waiting for the vault’s configured Monero confirmation threshold. Do not send another deposit to speed this up.',
+    'The vault is preparing the attestation proof for this mint.',
+    'Waiting for the Sepolia mint transaction and its confidential result.',
+  ][step] }
   if (d.status === 'minted') return { kind: 'done' }
   if (d.status === 'failed') return panel('Mint did not succeed', 'The actual encrypted mint result was zero. Contact the operator with your private intent ID.', 'alert')
   if (d.status === 'quarantined') return panel('Deposit requires review', 'Automatic processing stopped. Keep your private intent ID.', 'alert')

@@ -38,8 +38,10 @@ export function Header({ route, wallet, info, menu, setMenu }: Props) {
               <span className="w6 md">Testnet bridge</span>
               <button type="button" className="ibtn" aria-label="Close" onClick={() => setMenu(null)}><Icon name="close" /></button>
             </div>
-            <span className="w5">Monero stagenet → Sepolia</span>
-            <span className="muted">A Nitro vault processes amounts and addresses. This PoC trusts configured Monero and Ethereum nodes.</span>
+            <span className="w5">Monero stagenet ↔ Ethereum Sepolia</span>
+            <span className="muted">Deposit stagenet XMR to receive confidential cwXMR. Redeem cwXMR back to a Monero wallet.</span>
+            <span className="muted">Monero transfers and cwXMR balances keep amounts private from public observers. Vaults process amounts and recipient mappings; the Ethereum account remains public.</span>
+            <span className="muted">This PoC trusts configured Monero and Ethereum nodes.</span>
             <span className="muted">Testnet tokens only. No real value.</span>
             {DEMO && <span className="w5">Demo mode. All results are simulated.</span>}
             {info && (
