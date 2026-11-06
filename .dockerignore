@@ -5,5 +5,7 @@
 **/*.pem
 **/*.key
 **/*.eif
+dev-state
+**/bundle.json
 artifacts
 infra/.terraform

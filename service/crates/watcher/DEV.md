@@ -60,6 +60,25 @@ It binds only 127.0.0.1, requires the exact loopback Host header, rejects browse
 
 Use local tools in the same namespace (`docker exec`, or an explicitly local host-network setup on Linux). Do not publish a reverse proxy. Normal web live mode remains gated and is not made to believe this host service is an attested enclave. User-signed redemption requests must target the **new unsafe Bridge**, using the existing real Zama encryption/client ABI. No public signing oracle is exposed.
 
+## Linux container runner
+
+The separate `enclave/Dockerfile.dev` builds only the explicitly unsafe runner. It requires a local `cwxmr-rust-build:local` builder image created from the `rust-build` target of `enclave/Dockerfile`; this local build cache is mutable and is not a reproducible release artifact. Build it from the same checked-out project and review the resulting image before use. The production image and its Nitro startup remain separate.
+
+```sh
+docker build --platform linux/amd64 --target rust-build -f enclave/Dockerfile -t cwxmr-rust-build:local .
+docker build --platform linux/amd64 -f enclave/Dockerfile.dev -t cwxmr-unsafe-dev:local .
+```
+
+On Linux, `--network host` shares loopback with the required Nym, sidecar and PostgreSQL services; it does not provide container network isolation. Keep the state directory outside the build context and Git, and mount it at the paths used in the configuration. For example, with an absolute private directory mounted at `/state`, set `bundle` in `/state/config.json` to `/state/bundle.json`:
+
+```sh
+docker run --rm --network host -v /absolute/private/dev-state:/state cwxmr-unsafe-dev:local init /state/bundle.json
+docker run --rm --network host -v /absolute/private/dev-state:/state cwxmr-unsafe-dev:local init-db /state/config.json
+docker run --rm --network host -v /absolute/private/dev-state:/state cwxmr-unsafe-dev:local check /state/config.json
+```
+
+The later `run /state/config.json --send-stagenet` command can spend test funds and must use the same mount and host network. Host networking on Docker Desktop is different; this recipe targets Linux. The image does not start Nym, the sidecar or PostgreSQL for you.
+
 ## Validation and limits
 
 Local tests cover bundle permissions/recovery/no overwrite, HTTP Host/Origin boundaries, exact journal binding/PCR/nonce/signature, normal NSM failure, and mock RPC pin rejection. The Rust-produced journal was independently decoded with ethers against the Solidity ABI. No actual deployment, broadcast, funded mint/payout or genuine online SDK decryption was performed. Tests with forged journal fixtures do not demonstrate attestation security. Mainnet is rejected; this runner cannot provide production custody guarantees.
