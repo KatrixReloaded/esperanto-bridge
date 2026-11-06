@@ -296,14 +296,33 @@ fn run(config: Config, bundle: Bundle) -> Result<()> {
             let fhe = fhe::Client::new("http://127.0.0.1:8788")?;
             let mut cursor = config.evm_deployment_block;
             let mut payment_cursor = None;
+            let mut scan_failures = 0u8;
             loop {
                 redemptions.check_runner_lease()?;
                 let mut deposits = worker_deposits
                     .lock()
                     .map_err(|_| anyhow::anyhow!("worker lock poisoned"))?;
-                if rt.block_on(deposits.sync_once(&chain, config.monero_birth_height))? {
-                    drop(deposits);
-                    continue;
+                match rt.block_on(deposits.sync_once(&chain, config.monero_birth_height)) {
+                    Ok(advanced) => {
+                        scan_failures = 0;
+                        if advanced {
+                            drop(deposits);
+                            continue;
+                        }
+                    }
+                    Err(error) => {
+                        worker_health.store(0, Ordering::Relaxed);
+                        // Only this read-only scan is retryable. Release the API mutex during
+                        // backoff, retain the same lease, then recheck it at the loop entrance.
+                        drop(deposits);
+                        if let Some(delay) = scan_retry_delay(&error, &mut scan_failures) {
+                            eprintln!("UNSAFE TEST scan: read retry; issuance unavailable");
+                            std::thread::sleep(delay);
+                            continue;
+                        }
+                        eprintln!("UNSAFE TEST scan: failed; retries exhausted or disallowed");
+                        return Err(error);
+                    }
                 }
                 worker_health.store(1, Ordering::Relaxed);
                 rt.block_on(step(
@@ -329,6 +348,17 @@ fn run(config: Config, bundle: Bundle) -> Result<()> {
     eprintln!("UNSAFE TEST startup: loopback_api_and_worker");
     serve(port, deposits, health)
 }
+/// At most three consecutive failed scan attempts. This must never wrap financial actions or reconciliation.
+fn scan_retry_delay(error: &anyhow::Error, failures: &mut u8) -> Option<Duration> {
+    error.downcast_ref::<crate::deposits::ChainUnavailable>()?;
+    *failures = failures.saturating_add(1);
+    if *failures >= 3 {
+        None
+    } else {
+        Some(Duration::from_secs(u64::from(*failures) * 5))
+    }
+}
+
 async fn finalized(evm: &evm::Client, hash: Id) -> Result<bool> {
     let receipt = evm.receipt(hash.0.into()).await?;
     if receipt.finality != Finality::Finalized {
@@ -596,6 +626,34 @@ fn serve(port: u16, deposits: Arc<Mutex<Deposits>>, health: Arc<AtomicU8>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_typed_scan_reads_retry_with_two_bounded_backoffs() {
+        let unavailable = anyhow::Error::new(crate::deposits::ChainUnavailable);
+        let mut failures = 0;
+        assert_eq!(
+            scan_retry_delay(&unavailable, &mut failures),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            scan_retry_delay(&unavailable, &mut failures),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(scan_retry_delay(&unavailable, &mut failures), None);
+        assert_eq!(scan_retry_delay(&unavailable, &mut failures), None);
+        for fatal in [
+            "trusted chain unavailable",
+            "scan anchor reorganized",
+            "vault state unavailable",
+            "ambiguous broadcast",
+        ] {
+            let mut failures = 0;
+            assert_eq!(
+                scan_retry_delay(&anyhow::anyhow!(fatal), &mut failures),
+                None
+            );
+            assert_eq!(failures, 0);
+        }
+    }
     pub(super) fn config() -> Config {
         serde_json::from_value(json!({"mode":MODE,"chain_id":11155111,"pins":{"bridge":"0x1111111111111111111111111111111111111111","registry":"0x2222222222222222222222222222222222222222","adapter":"0x3333333333333333333333333333333333333333","verifier":"0x4444444444444444444444444444444444444444","bridge_code_hash":format!("0x{}","01".repeat(32)),"registry_code_hash":format!("0x{}","02".repeat(32)),"adapter_code_hash":format!("0x{}","03".repeat(32)),"verifier_code_hash":format!("0x{}","04".repeat(32))},"bundle":"unused","database_url":"postgresql://127.0.0.1:5432/postgres","monero_rpc_url":"https://stagenet.example","monero_birth_height":1,"evm_deployment_block":1,"api_port":8789,"confirmations":10,"gas_limit":1000000,"max_fee_per_gas":1000000000,"max_priority_fee_per_gas":1,"fee_terms_hash":format!("0x{}","05".repeat(32)),"fixed_fee_atomic":1000,"network_fee_cap_atomic":100,"max_fee_per_weight":100})).unwrap()
     }
