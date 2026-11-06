@@ -67,12 +67,82 @@ impl Cipher {
 }
 
 /// PostgreSQL coordinates cooperative writers only; it does not establish freshness.
+///
+/// The synchronous postgres client drives its own Tokio runtime. Every complete operation
+/// runs outside the caller's runtime, including current-thread runtimes. The caller remains
+/// blocked and exclusively borrows this store, so operations cannot overlap. The same client
+/// is retained across calls: session leases and transaction atomicity are unchanged.
 pub struct PostgresStore {
+    session: Option<Session>,
+}
+impl PostgresStore {
+    /// Connect before entering async execution. TLS must terminate inside the enclave.
+    pub fn new(client: Client, cipher: Cipher) -> Self {
+        Self {
+            session: Some(Session::new(client, cipher)),
+        }
+    }
+    fn run<T: Send>(
+        &mut self,
+        f: impl FnOnce(&mut Session) -> Result<T, Box<dyn Error + Send + Sync>> + Send,
+    ) -> Result<T, Box<dyn Error + Send + Sync>> {
+        let session = self
+            .session
+            .as_mut()
+            .expect("storage session present until drop");
+        std::thread::scope(|scope| match scope.spawn(move || f(session)).join() {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        })
+    }
+    pub fn acquire_stagenet_poc_lease(
+        &mut self,
+        vault: Id,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.run(move |s| s.acquire_stagenet_poc_lease(vault))
+    }
+    pub fn check_stagenet_poc_lease(
+        &mut self,
+        vault: Id,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.run(move |s| s.check_stagenet_poc_lease(vault))
+    }
+    pub fn migrate(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.run(Session::migrate)
+    }
+    pub fn load(&mut self, vault: Id) -> Result<VaultState, Box<dyn Error + Send + Sync>> {
+        self.run(move |s| s.load(vault))
+    }
+    pub fn initialize(&mut self, vault: Id) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.run(move |s| s.initialize(vault))
+    }
+    pub fn update<T: Send>(
+        &mut self,
+        vault: Id,
+        f: impl FnOnce(&mut VaultState) -> Result<T, Box<dyn Error + Send + Sync>> + Send,
+    ) -> Result<T, Box<dyn Error + Send + Sync>> {
+        // The entire transaction and closure stay on one thread; no lock is released between
+        // decrypting, applying the transition, encrypting and committing the state.
+        self.run(move |s| s.update(vault, f))
+    }
+}
+impl Drop for PostgresStore {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            // Client::drop also drives its runtime. Join before returning so session locks
+            // are released before another cooperative process attempts to acquire them.
+            let _ = std::thread::spawn(move || drop(session)).join();
+        }
+    }
+}
+
+/// PostgreSQL coordinates cooperative writers only; it does not establish freshness.
+struct Session {
     client: Client,
     cipher: Cipher,
     poc_lease: Option<Id>,
 }
-impl PostgresStore {
+impl Session {
     /// TLS must terminate inside the enclave; this constructor only accepts an already configured client.
     pub fn new(client: Client, cipher: Cipher) -> Self {
         Self {
