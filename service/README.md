@@ -1,0 +1,9 @@
+# Backend foundation and gates
+
+The core encrypts vault records in-process using XChaCha20-Poly1305 and a key supplied by an injected `DataKeySource`; the PostgreSQL migration stores only ciphertext. The store must run inside the trusted enclave, and the real KMS attested-recipient key source and enclave-terminated authenticated PostgreSQL transport are not implemented. The PostgreSQL client must be configured with enclave-terminated authenticated TLS outside local tests. Initializing a new vault is an explicit operation and must never be used as automatic recovery when a row is missing.
+
+PostgreSQL transaction and advisory locks prevent cooperative concurrent updates, not hostile deletion, rollback, equivocation or clones. KMS and AEAD do not establish freshness or exclusive execution. Broadcast authorization always fails until an independently reviewed, rollback-resistant fencing and recovery design is implemented. Persisted signed bytes must be reused after an uncertain broadcast; no timer permits refund or reassignment. Monero consensus validation and Ethereum finality are separate unresolved gates.
+
+The Zama module includes a bounded SDK client and Sepolia permit validation, plus Alloy EIP-712 mint authorization signing. The SDK and all plaintext processing must run inside the enclave; loopback alone does not prove co-location. No SDK package, Ethereum transaction submission, proof verification, attested KMS context, or deployed-contract integration is supplied. Input domain metadata alone is not cryptographic proof verification. Do not enable minting, claiming, decryption or production deployment on this foundation.
+
+Run `cargo test --workspace` and set `CWXMR_TEST_DATABASE_URL` to a disposable PostgreSQL database to exercise the storage race and restart test. Without that variable the database test is skipped.
