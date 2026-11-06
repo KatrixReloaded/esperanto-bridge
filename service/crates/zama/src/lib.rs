@@ -1,6 +1,7 @@
 //! Confidential inputs and enclave-local Zama SDK integration.
 use zz_core::AtomicAmount;
 
+pub mod evm;
 pub mod fhe;
 pub mod mint;
 pub mod permit;

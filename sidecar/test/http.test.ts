@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createServer } from '../src/http.ts';
+import { EvmClient, CHAIN_ID } from '../src/evm.ts';
 import { SdkError, type SdkAdapter, type PreparedPermit } from '../src/sdk.ts';
 
 const contract = '0x1111111111111111111111111111111111111111';
@@ -195,4 +196,22 @@ test('decrypt width is bound to session and response', async () => {
   const p2 = await s.post('/decrypt-request', wide);
   assert.equal((await s.post('/decrypt', {sessionId:p2.body.sessionId, ...scope, signature})).body.error.code, 'session_scope_mismatch');
  } finally { await s.close(); }
+});
+
+
+test('EVM routes keep loopback checks, separate size bounds and sanitized chain errors', async () => {
+  const calls: string[] = [];
+  const evm = new EvmClient(async method => { calls.push(method); return method === 'eth_chainId' ? '0xaa36a7' : '0x1234'; });
+  const s = await service({ evm });
+  const body = {chainId:CHAIN_ID,method:'eth_call',params:[{to:contract,data:'0x'+'ab'.repeat(12000)},{blockHash:handle,requireCanonical:true}]};
+  try {
+    assert.equal((await s.post('/evm/read',body)).status,200);
+    assert.deepEqual(calls,['eth_chainId','eth_call']);
+    assert.equal((await s.post('/evm/read',{...body,chainId:'1'})).body.error.code,'chain_mismatch');
+    assert.equal((await s.post('/evm/read',body,{origin:'null'})).status,403);
+    assert.equal((await s.post('/evm/read',' '.repeat(512*1024+1),{},true)).status,413);
+    assert.equal(s.calls.encrypt+s.calls.prepare+s.calls.decrypt,0);
+  } finally { await s.close(); }
+  const noEvm=await service();
+  try { assert.equal((await noEvm.post('/evm/read',body)).status,404); } finally { await noEvm.close(); }
 });

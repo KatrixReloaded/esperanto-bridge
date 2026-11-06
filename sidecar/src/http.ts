@@ -1,5 +1,6 @@
 import { createServer as nodeCreateServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { EvmError, MAX_EVM_BODY, type EvmClient } from './evm.ts';
 import { getAddress, ZeroAddress } from 'ethers';
 import { SdkError, type SdkAdapter, type PreparedPermit, type DecryptionWidth } from './sdk.ts';
 
@@ -38,7 +39,7 @@ function send(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'connection': 'close', 'x-content-type-options': 'nosniff' });
   response.end(JSON.stringify(body));
 }
-async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(request: IncomingMessage, maximum = MAX_BODY): Promise<Record<string, unknown>> {
   const bytes = await new Promise<Buffer>((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
@@ -52,7 +53,7 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
     const onAborted = () => onError();
     const onData = (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
+      if (size > maximum) {
         cleanup();
         request.pause();
         reject(new HttpError('body_too_large', 413));
@@ -76,7 +77,7 @@ const sdkErrors: Record<string, number> = {
 };
 
 /** Single-operation, bounded ephemeral service; the caller must bind to loopback. */
-export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; maxSessions?: number; operationTimeoutMs?: number } = {}) {
+export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; maxSessions?: number; operationTimeoutMs?: number; evm?: EvmClient } = {}) {
   const ttl = bound(options.sessionTtlMs, 300_000);
   const capacity = bound(options.maxSessions, 64);
   const timeout = bound(options.operationTimeoutMs, 120_000);
@@ -111,11 +112,13 @@ export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; 
           !/^127\.0\.0\.1(?::\d{1,5})?$/.test(request.headers.host ?? '')) fail('invalid_host', 403);
       if (request.headers.origin !== undefined) fail('origin_forbidden', 403);
       if (request.method !== 'POST') fail('method_not_allowed', 405);
-      if (!['/encrypt', '/encrypt-redemption', '/decrypt-request', '/decrypt'].includes(request.url ?? '')) fail('not_found', 404);
+      const evmRoute = ['/evm/read', '/evm/send', '/evm/receipt'].includes(request.url ?? '');
+      if (!['/encrypt', '/encrypt-redemption', '/decrypt-request', '/decrypt'].includes(request.url ?? '') && !(evmRoute && options.evm)) fail('not_found', 404);
+      const bodyLimit = evmRoute ? MAX_EVM_BODY : MAX_BODY;
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers['content-type'] ?? '')) fail('unsupported_media_type', 415);
       const length = request.headers['content-length'];
-      if (length && (!/^\d+$/.test(length) || BigInt(length) > BigInt(MAX_BODY))) fail('body_too_large', 413);
-      const body = await readBody(request);
+      if (length && (!/^\d+$/.test(length) || BigInt(length) > BigInt(bodyLimit))) fail('body_too_large', 413);
+      const body = await readBody(request, bodyLimit);
       if (unavailable || closed) fail('sdk_unavailable', 503);
       if (busy) fail('busy', 503);
       cleanup();
@@ -127,7 +130,9 @@ export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; 
       }
       busy = true;
       try {
-        if (request.url === '/encrypt') {
+        if (evmRoute) {
+          send(response, 200, await options.evm!.handle(request.url!, body));
+        } else if (request.url === '/encrypt') {
           fields(body, ['contract', 'user', 'value']);
           const contract = address(body.contract), user = address(body.user);
           if (typeof body.value !== 'string' || !/^(0|[1-9]\d{0,19})$/.test(body.value) || BigInt(body.value) > MAX_UINT64) fail('invalid_uint64');
@@ -171,7 +176,8 @@ export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; 
         }
       } finally { busy = false; }
     })().catch((error: unknown) => {
-      if (error instanceof HttpError) send(response, error.status, { error: { code: error.code } });
+      if (error instanceof EvmError) send(response, error.status, { error: { code: error.code } });
+      else if (error instanceof HttpError) send(response, error.status, { error: { code: error.code } });
       else if (error instanceof SdkError && Object.hasOwn(sdkErrors, error.code)) send(response, sdkErrors[error.code]!, { error: { code: error.code } });
       else send(response, 502, { error: { code: 'sdk_failed' } });
     });

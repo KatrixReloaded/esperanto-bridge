@@ -3,14 +3,16 @@
 for (const name of ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'table'] as const) console[name] = () => {};
 const { createSdk } = await import('./sdk.ts');
 const { createServer } = await import('./http.ts');
+const { EvmClient, nymRpc } = await import('./evm.ts');
 
 try {
   const rawPort = process.env.SIDECAR_PORT ?? '8788';
   if (!/^(0|[1-9][0-9]{0,4})$/.test(rawPort) || Number(rawPort) > 65535) throw new Error();
-  const sdk = createSdk(process.env.SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com');
+  const rpcUrl = process.env.SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com';
+  const sdk = createSdk(rpcUrl);
   // Initialization completes before the listener can accept encryption requests.
   await sdk.prepareEncryption();
-  const server = createServer(sdk);
+  const server = createServer(sdk, { evm: new EvmClient(nymRpc(rpcUrl)) });
   const dispose = () => { try { sdk.dispose(); } catch { /* fixed exit status only */ } };
   const stop = (code = 0) => {
     server.closeAllConnections();
