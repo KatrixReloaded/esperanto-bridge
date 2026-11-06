@@ -11,6 +11,7 @@ fn fixture(signer: &PrivateKeySigner) -> (Scope, Value) {
         contract: Address::repeat_byte(0x11),
         user: signer.address(),
         handle: B256::repeat_byte(0x22),
+        width: Width::Uint64,
     };
     let start = (now_ms().unwrap() / 1000).to_string();
     let mut extra = vec![1];
@@ -31,7 +32,7 @@ fn fixture(signer: &PrivateKeySigner) -> (Scope, Value) {
     (
         scope,
         json!({"sessionId":"ab".repeat(32),"contract":scope.contract,"user":scope.user,"handle":scope.handle,
-        "expiresAt":(now_ms().unwrap()+290_000).to_string(),"publicKey":"0xabcd","startTimestamp":start,"typedData":typed,"digest":digest}),
+        "width":"uint64", "expiresAt":(now_ms().unwrap()+290_000).to_string(),"publicKey":"0xabcd","startTimestamp":start,"typedData":typed,"digest":digest}),
     )
 }
 
@@ -146,6 +147,7 @@ fn prepare_rejects_malformed_or_rebound_response() {
         ("contract", json!(Address::repeat_byte(0x33))),
         ("user", json!(Address::repeat_byte(0x44))),
         ("handle", json!(B256::repeat_byte(0x55))),
+        ("width", json!("uint256")),
         ("sessionId", json!("AB".repeat(32))),
         ("sessionId", json!("00".repeat(31))),
         ("expiresAt", json!("0")),
@@ -325,7 +327,7 @@ async fn http_decrypt_consumes_original_authorization_scope() {
     let (url, worker) = mock(
         200,
         "application/json",
-        json!({"value":u64::MAX.to_string()}).to_string(),
+        json!({"width":"uint64", "value":u64::MAX.to_string()}).to_string(),
     );
     assert_eq!(
         Client::new(&url)
@@ -371,4 +373,60 @@ async fn wallet_permit_export_restore_requires_actual_user_and_independent_conte
         .wallet_request(U256::from(7))
         .is_err());
     Ok(())
+}
+
+#[tokio::test]
+async fn wide_decrypt_enforces_response_width_and_canonical_range() {
+    let signer = PrivateKeySigner::random();
+    let (mut scope, _) = fixture(&signer);
+    scope.width = Width::Uint256;
+    for (width, value, expected) in [
+        ("uint256", U256::MAX.to_string(), true),
+        ("uint64", "1".into(), false),
+        ("uint256", "01".into(), false),
+        ("uint256", format!("{}0", U256::MAX), false),
+    ] {
+        let auth = AuthorizedDecryption {
+            scope,
+            session_id: "ab".repeat(32),
+            expires_at: now_ms().unwrap() + 10000,
+            signature: "sig".into(),
+        };
+        let (url, worker) = mock(
+            200,
+            "application/json",
+            json!({"width":width,"value":value}).to_string(),
+        );
+        let result = Client::new(&url).unwrap().decrypt_u256(auth).await;
+        assert_eq!(result.is_ok(), expected);
+        if expected {
+            assert_eq!(result.unwrap(), U256::MAX);
+        }
+        assert!(worker.join().unwrap().contains("\"width\":\"uint256\""));
+    }
+}
+
+#[tokio::test]
+async fn redemption_encrypt_sends_one_amount_and_three_exact_words() {
+    let handles = [B256::repeat_byte(1); 4];
+    let (url, worker) = mock(
+        200,
+        "application/json",
+        json!({"handles":handles,"inputProof":"0xab"}).to_string(),
+    );
+    let (returned, _) = Client::new(&url)
+        .unwrap()
+        .encrypt_redemption(
+            Address::repeat_byte(1),
+            Address::repeat_byte(2),
+            3,
+            [U256::ZERO, U256::MAX, U256::from(4)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(returned, handles);
+    let request = worker.join().unwrap();
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["destination"][1], U256::MAX.to_string());
+    assert_eq!(body["amount"], "3");
 }

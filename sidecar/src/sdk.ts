@@ -16,7 +16,9 @@ export type PreparedPermit = {
   startTimestamp: string;
   digest: string;
 };
+export type DecryptionWidth = 'uint64' | 'uint256';
 export type DecryptionInput = {
+  width: DecryptionWidth;
   contract: string;
   user: string;
   handle: string;
@@ -162,6 +164,19 @@ export function createSdk(rpcUrl: string) {
         throw new SdkError('encrypt_failed');
       }
     },
+    async encryptRedemption(contract: string, user: string, amount: bigint, destination: readonly [bigint, bigint, bigint]) {
+      ready();
+      const contractAddress = address(contract), userAddress = address(user);
+      uint64(amount);
+      if (destination.length !== 3 || destination.some(v => typeof v !== 'bigint' || v < 0n || v >= (1n << 256n))) throw new SdkError('invalid_uint256');
+      try {
+        const result = await sdk.encrypt({ contractAddress, userAddress, values: [
+          { type: 'euint64', value: amount }, ...destination.map(value => ({ type: 'euint256' as const, value }))
+        ] }, options());
+        if (result.encryptedValues.length !== 4 || !/^0x(?:[0-9a-fA-F]{2})+$/.test(result.inputProof)) throw new Error();
+        return { handles: result.encryptedValues.map(handle), inputProof: result.inputProof };
+      } catch { throw new SdkError('encrypt_failed'); }
+    },
     async prepare(contract: string, user: string): Promise<PreparedPermit> {
       ready();
       const contractAddress = address(contract);
@@ -186,6 +201,7 @@ export function createSdk(rpcUrl: string) {
     },
     async decrypt(input: DecryptionInput, signature: string): Promise<bigint> {
       ready();
+      if (input.width !== 'uint64' && input.width !== 'uint256') throw new SdkError('decrypt_failed');
       const contractAddress = address(input.contract);
       const userAddress = address(input.user);
       const ciphertext = handle(input.handle);
@@ -221,8 +237,7 @@ export function createSdk(rpcUrl: string) {
             },
           },
         });
-        if (values.length !== 1 || values[0].type !== 'uint64') throw new Error();
-        uint64(values[0].value);
+        if (values.length !== 1 || values[0].type !== input.width || typeof values[0].value !== 'bigint' || values[0].value < 0n || values[0].value >= (1n << BigInt(input.width === 'uint64' ? 64 : 256))) throw new Error();
         return values[0].value;
       } catch (error) {
         throw new SdkError(classifyDecryptionError(error, userAddress, ciphertext));

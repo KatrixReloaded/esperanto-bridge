@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 zz-core = { path = "../core" }
-alloy = { version = "=1.8.3", features = ["eip712", "k256", "signer-local", "sol-types", "dyn-abi"] }
+alloy = { version = "=1.8.3", features = ["eip712", "k256", "signer-local", "sol-types", "dyn-abi", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

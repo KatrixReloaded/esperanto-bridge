@@ -24,11 +24,19 @@ pub struct EncryptedInput {
     pub input_proof: Bytes,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Width {
+    Uint64,
+    Uint256,
+}
+
 #[derive(Clone, Copy)]
 pub struct Scope {
     pub contract: Address,
     pub user: Address,
     pub handle: B256,
+    pub width: Width,
 }
 
 pub struct PreparedDecryption {
@@ -49,6 +57,7 @@ struct PreparedResponse {
     contract: Address,
     user: Address,
     handle: B256,
+    width: Width,
     expires_at: String,
     public_key: String,
     start_timestamp: String,
@@ -65,6 +74,7 @@ struct EncryptResponse {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DecryptResponse {
+    width: Width,
     value: String,
 }
 #[derive(Deserialize)]
@@ -148,6 +158,46 @@ impl Client {
         })
     }
 
+    /// Encrypt amount and exactly three destination words under one proof for Bridge + submitting user.
+    pub async fn encrypt_redemption(
+        &self,
+        contract: Address,
+        user: Address,
+        amount: u64,
+        destination: [U256; 3],
+    ) -> Result<([B256; 4], Bytes)> {
+        validate_addresses(contract, user)?;
+        #[derive(Serialize)]
+        struct Request {
+            contract: Address,
+            user: Address,
+            amount: String,
+            destination: [String; 3],
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Response {
+            handles: [B256; 4],
+            input_proof: Bytes,
+        }
+        let response: Response = self
+            .post(
+                "encrypt-redemption",
+                &Request {
+                    contract,
+                    user,
+                    amount: amount.to_string(),
+                    destination: destination.map(|x| x.to_string()),
+                },
+            )
+            .await?;
+        ensure!(
+            response.handles.iter().all(|h| !h.is_zero()) && !response.input_proof.is_empty(),
+            "invalid_sidecar_response"
+        );
+        Ok((response.handles, response.input_proof))
+    }
+
     pub async fn prepare_decryption(&self, scope: Scope) -> Result<PreparedDecryption> {
         validate_scope(scope)?;
         #[derive(Serialize)]
@@ -155,6 +205,7 @@ impl Client {
             contract: Address,
             user: Address,
             handle: B256,
+            width: Width,
         }
         let response = self
             .post(
@@ -163,6 +214,7 @@ impl Client {
                     contract: scope.contract,
                     user: scope.user,
                     handle: scope.handle,
+                    width: scope.width,
                 },
             )
             .await?;
@@ -170,6 +222,17 @@ impl Client {
     }
 
     pub async fn decrypt(&self, authorized: AuthorizedDecryption) -> Result<u64> {
+        ensure!(authorized.scope.width == Width::Uint64, "width mismatch");
+        let value = self.decrypt_value(authorized).await?;
+        u64::try_from(value).map_err(|_| anyhow!("invalid_sidecar_response"))
+    }
+
+    pub async fn decrypt_u256(&self, authorized: AuthorizedDecryption) -> Result<U256> {
+        ensure!(authorized.scope.width == Width::Uint256, "width mismatch");
+        self.decrypt_value(authorized).await
+    }
+
+    async fn decrypt_value(&self, authorized: AuthorizedDecryption) -> Result<U256> {
         validate_expiry(authorized.expires_at, now_ms()?)?;
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -179,6 +242,7 @@ impl Client {
             user: Address,
             handle: B256,
             signature: String,
+            width: Width,
         }
         let response: DecryptResponse = self
             .post(
@@ -189,10 +253,29 @@ impl Client {
                     user: authorized.scope.user,
                     handle: authorized.scope.handle,
                     signature: authorized.signature,
+                    width: authorized.scope.width,
                 },
             )
             .await?;
-        decimal(&response.value).map_err(|_| anyhow!("invalid_sidecar_response"))
+        ensure!(
+            response.width == authorized.scope.width,
+            "invalid_sidecar_response"
+        );
+        let value = &response.value;
+        ensure!(
+            !value.is_empty()
+                && value.len() <= 78
+                && value.bytes().all(|b| b.is_ascii_digit())
+                && (value.len() == 1 || !value.starts_with('0')),
+            "invalid_sidecar_response"
+        );
+        let result: U256 = value
+            .parse()
+            .map_err(|_| anyhow!("invalid_sidecar_response"))?;
+        if response.width == Width::Uint64 {
+            ensure!(result <= U256::from(u64::MAX), "invalid_sidecar_response");
+        }
+        Ok(result)
     }
 
     async fn post<T: DeserializeOwned>(
@@ -301,7 +384,8 @@ impl PreparedDecryption {
         ensure!(
             scope.contract == response.contract
                 && scope.user == response.user
-                && scope.handle == response.handle,
+                && scope.handle == response.handle
+                && scope.width == response.width,
             "sidecar_scope_mismatch"
         );
         ensure!(
@@ -429,8 +513,9 @@ fn response_error(status: u16, bytes: &[u8]) -> anyhow::Error {
         return anyhow!("invalid_sidecar_response");
     };
     let expected = match body.error.code.as_str() {
-        "invalid_address" | "invalid_handle" | "invalid_user" | "invalid_uint64"
-        | "invalid_request" | "invalid_json" | "invalid_session" | "invalid_signature" => 400,
+        "invalid_uint256" | "invalid_width" | "invalid_address" | "invalid_handle"
+        | "invalid_user" | "invalid_uint64" | "invalid_request" | "invalid_json"
+        | "invalid_session" | "invalid_signature" => 400,
         "invalid_host"
         | "origin_forbidden"
         | "session_scope_mismatch"

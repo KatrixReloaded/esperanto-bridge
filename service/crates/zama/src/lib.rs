@@ -31,8 +31,23 @@ mod tests {
 
     #[test]
     fn reconciles_actual_entitlement_within_requested_bound() {
-        assert_eq!(reconcile_actual(AtomicAmount(5), AtomicAmount(0)), Err(ActualResultError::Zero));
-        assert_eq!(reconcile_actual(AtomicAmount(5), AtomicAmount(6)), Err(ActualResultError::ExceedsRequested));
-        assert_eq!(reconcile_actual(AtomicAmount(5), AtomicAmount(3)), Ok(AtomicAmount(3)));
+        assert_eq!(
+            reconcile_actual(AtomicAmount(5), AtomicAmount(0)),
+            Err(ActualResultError::Zero)
+        );
+        assert_eq!(
+            reconcile_actual(AtomicAmount(5), AtomicAmount(6)),
+            Err(ActualResultError::ExceedsRequested)
+        );
+        assert_eq!(
+            reconcile_actual(AtomicAmount(5), AtomicAmount(3)),
+            Ok(AtomicAmount(3))
+        );
     }
 }
+
+alloy::sol!(
+    #[allow(missing_docs)]
+    Bridge,
+    "abi/Bridge.json"
+);

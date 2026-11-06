@@ -9,7 +9,7 @@ const contract = '0x1111111111111111111111111111111111111111';
 const user = '0x2222222222222222222222222222222222222222';
 const handle: `0x${string}` = `0x${'33'.repeat(32)}`;
 const signature = `0x${'44'.repeat(65)}`;
-const scope = { contract, user, handle };
+const scope = { contract, user, handle, width: 'uint64' };
 function fake() {
   const calls = { encrypt: 0, prepare: 0, decrypt: 0, dispose: 0, values: [] as bigint[] };
   const sdk = {
@@ -17,6 +17,7 @@ function fake() {
     encrypt: async (_contract: string, _user: string, value: bigint) => {
       calls.encrypt++; calls.values.push(value); return { handle, inputProof: '0x1234' };
     },
+    encryptRedemption: async (_contract: string, _user: string, _amount: bigint, _destination: readonly [bigint, bigint, bigint]) => ({ handles: [handle, handle, handle, handle], inputProof: '0x1234' }),
     prepare: async () => {
       calls.prepare++;
       return { keypair: { publicKey: 'public', privateKey: 'SECRET' }, publicKey: 'public', startTimestamp: '1', digest: handle,
@@ -83,13 +84,13 @@ test('permit public fields, single use, scope binding, capacity and failure cons
     const prepared = await s.post('/decrypt-request', scope);
     assert.equal(prepared.status, 200);
     assert.match(prepared.body.sessionId, /^[0-9a-f]{64}$/);
-    assert.deepEqual(Object.keys(prepared.body).sort(), ['sessionId', 'contract', 'user', 'handle', 'expiresAt', 'publicKey', 'startTimestamp', 'typedData', 'digest'].sort());
+    assert.deepEqual(Object.keys(prepared.body).sort(), ['sessionId', 'contract', 'user', 'handle', 'expiresAt', 'publicKey', 'startTimestamp', 'typedData', 'digest', 'width'].sort());
     assert.ok(!prepared.raw.includes('SECRET'));
     assert.equal((await s.post('/decrypt-request', scope)).body.error.code, 'session_capacity');
     assert.equal(s.calls.prepare, 1);
     assert.equal((await s.post('/decrypt', decryptBody(prepared.body.sessionId))).body.value, '18446744073709551615');
     assert.equal((await s.post('/decrypt', decryptBody(prepared.body.sessionId))).body.error.code, 'session_unavailable');
-    for (const mutation of [{ user: contract }, { handle: '0x' + '55'.repeat(32) }, { signature: 'bad' }, { extra: 'bad' }]) {
+    for (const mutation of [{ user: contract }, { handle: '0x' + '55'.repeat(32) }, { signature: 'bad' }, { width: 'uint256' }, { extra: 'bad' }]) {
       const permit = await s.post('/decrypt-request', scope);
       assert.ok((await s.post('/decrypt', { ...decryptBody(permit.body.sessionId), ...mutation })).status >= 400);
       assert.equal((await s.post('/decrypt', decryptBody(permit.body.sessionId))).status, 410);
@@ -170,4 +171,28 @@ test('server options enforce configured upper/lower bounds', () => {
   for (const options of [{ maxSessions: 65 }, { sessionTtlMs: 300001 }, { operationTimeoutMs: 120001 }, { maxSessions: 0 }, { maxSessions: 1.5 }]) {
     assert.throws(() => createServer(fake().sdk, options), /invalid_server_option/);
   }
+});
+
+test('redemption encryption bounds three uint256 words', async () => {
+ const s = await service();
+ try {
+  const max = ((1n << 256n) - 1n).toString();
+  assert.equal((await s.post('/encrypt-redemption', {contract, user, amount:'1', destination:['0', max, '9']})).status, 200);
+  for (const destination of [['0','1'], ['0','1',(1n << 256n).toString()], ['0','01','2']])
+   assert.equal((await s.post('/encrypt-redemption', {contract,user,amount:'1',destination})).body.error.code, 'invalid_uint256');
+ } finally { await s.close(); }
+});
+test('decrypt width is bound to session and response', async () => {
+ const f = fake(); f.sdk.decrypt = async input => input.width === 'uint256' ? (1n << 256n) - 1n : 1n;
+ const s = await service({}, f);
+ try {
+  const wide = {...scope, width:'uint256'};
+  const p = await s.post('/decrypt-request', wide);
+  assert.equal(p.body.width, 'uint256');
+  const result = await s.post('/decrypt', {sessionId:p.body.sessionId, ...wide, signature});
+  assert.equal(result.body.value, ((1n << 256n) - 1n).toString());
+  assert.equal(result.body.width, 'uint256');
+  const p2 = await s.post('/decrypt-request', wide);
+  assert.equal((await s.post('/decrypt', {sessionId:p2.body.sessionId, ...scope, signature})).body.error.code, 'session_scope_mismatch');
+ } finally { await s.close(); }
 });

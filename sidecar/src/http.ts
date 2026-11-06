@@ -1,11 +1,11 @@
 import { createServer as nodeCreateServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { getAddress, ZeroAddress } from 'ethers';
-import { SdkError, type SdkAdapter, type PreparedPermit } from './sdk.ts';
+import { SdkError, type SdkAdapter, type PreparedPermit, type DecryptionWidth } from './sdk.ts';
 
 const MAX_BODY = 16 * 1024;
 const MAX_UINT64 = (1n << 64n) - 1n;
-type Session = { contract: string; user: string; handle: string; expires: number; permit: PreparedPermit };
+type Session = { contract: string; user: string; handle: string; width: DecryptionWidth; expires: number; permit: PreparedPermit };
 class HttpError extends Error {
   readonly code: string;
   readonly status: number;
@@ -25,6 +25,10 @@ function address(value: unknown): string {
 function handle(value: unknown): string {
   if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(value) || /^0x0{64}$/.test(value)) return fail('invalid_handle');
   return value.toLowerCase();
+}
+function width(value: unknown): DecryptionWidth {
+  if (value !== 'uint64' && value !== 'uint256') return fail('invalid_width');
+  return value;
 }
 function fields(body: Record<string, unknown>, names: string[]) {
   if (Object.keys(body).length !== names.length || names.some(name => !Object.hasOwn(body, name))) fail('invalid_request');
@@ -107,7 +111,7 @@ export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; 
           !/^127\.0\.0\.1(?::\d{1,5})?$/.test(request.headers.host ?? '')) fail('invalid_host', 403);
       if (request.headers.origin !== undefined) fail('origin_forbidden', 403);
       if (request.method !== 'POST') fail('method_not_allowed', 405);
-      if (!['/encrypt', '/decrypt-request', '/decrypt'].includes(request.url ?? '')) fail('not_found', 404);
+      if (!['/encrypt', '/encrypt-redemption', '/decrypt-request', '/decrypt'].includes(request.url ?? '')) fail('not_found', 404);
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers['content-type'] ?? '')) fail('unsupported_media_type', 415);
       const length = request.headers['content-length'];
       if (length && (!/^\d+$/.test(length) || BigInt(length) > BigInt(MAX_BODY))) fail('body_too_large', 413);
@@ -129,8 +133,17 @@ export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; 
           if (typeof body.value !== 'string' || !/^(0|[1-9]\d{0,19})$/.test(body.value) || BigInt(body.value) > MAX_UINT64) fail('invalid_uint64');
           const result = await operation('/encrypt', () => sdk.encrypt(contract, user, BigInt(body.value as string)));
           send(response, 200, { handle: result.handle, inputProof: result.inputProof });
+        } else if (request.url === '/encrypt-redemption') {
+          fields(body, ['contract', 'user', 'amount', 'destination']);
+          const contract = address(body.contract), user = address(body.user);
+          if (typeof body.amount !== 'string' || !/^(0|[1-9]\d{0,19})$/.test(body.amount) || BigInt(body.amount) > MAX_UINT64) fail('invalid_uint64');
+          if (!Array.isArray(body.destination) || body.destination.length !== 3 || body.destination.some(v => typeof v !== 'string' || !/^(0|[1-9]\d{0,77})$/.test(v) || BigInt(v) >= (1n << 256n))) fail('invalid_uint256');
+          const destination = body.destination.map(v => BigInt(v)) as [bigint, bigint, bigint];
+          const result = await operation('/encrypt-redemption', () => sdk.encryptRedemption(contract, user, BigInt(body.amount as string), destination));
+          send(response, 200, result);
         } else if (request.url === '/decrypt-request') {
-          fields(body, ['contract', 'user', 'handle']);
+          fields(body, ['contract', 'user', 'handle', 'width']);
+          const requestedWidth = width(body.width);
           const contract = address(body.contract), user = address(body.user), ciphertext = handle(body.handle);
           if (contract === user) fail('invalid_user');
           if (sessions.size >= capacity) fail('session_capacity', 503);
@@ -138,22 +151,23 @@ export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; 
           if (closed) fail('sdk_unavailable', 503);
           const sessionId = randomBytes(32).toString('hex');
           const expires = Date.now() + ttl;
-          sessions.set(sessionId, { contract, user, handle: ciphertext, expires, permit });
-          send(response, 200, { sessionId, contract, user, handle: ciphertext, expiresAt: String(expires),
+          sessions.set(sessionId, { contract, user, handle: ciphertext, width: requestedWidth, expires, permit });
+          send(response, 200, { sessionId, contract, user, handle: ciphertext, width: requestedWidth, expiresAt: String(expires),
             publicKey: permit.publicKey, startTimestamp: permit.startTimestamp, typedData: permit.eip712, digest: permit.digest });
         } else {
           if (typeof body.sessionId !== 'string' || !/^[0-9a-f]{64}$/.test(body.sessionId)) fail('invalid_session');
           if (!session) fail('session_unavailable', 410);
-          fields(body, ['sessionId', 'contract', 'user', 'handle', 'signature']);
+          fields(body, ['sessionId', 'contract', 'user', 'handle', 'width', 'signature']);
+          const requestedWidth = width(body.width);
           const contract = address(body.contract), user = address(body.user), ciphertext = handle(body.handle);
-          if (session.contract !== contract || session.user !== user || session.handle !== ciphertext) fail('session_scope_mismatch', 403);
+          if (session.contract !== contract || session.user !== user || session.handle !== ciphertext || session.width !== requestedWidth) fail('session_scope_mismatch', 403);
           if (typeof body.signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(body.signature)) fail('invalid_signature');
           const signature = body.signature;
           const activeSession = session;
-          const value = await operation('/decrypt', () => sdk.decrypt({ contract, user, handle: ciphertext,
+          const value = await operation('/decrypt', () => sdk.decrypt({ contract, user, handle: ciphertext, width: requestedWidth,
             keypair: activeSession.permit.keypair, eip712: activeSession.permit.eip712 }, signature));
-          if (typeof value !== 'bigint' || value < 0n || value > MAX_UINT64) fail('decrypt_failed', 502);
-          send(response, 200, { value: value.toString() });
+          if (typeof value !== 'bigint' || value < 0n || value >= (1n << BigInt(requestedWidth === 'uint64' ? 64 : 256))) fail('decrypt_failed', 502);
+          send(response, 200, { width: requestedWidth, value: value.toString() });
         }
       } finally { busy = false; }
     })().catch((error: unknown) => {

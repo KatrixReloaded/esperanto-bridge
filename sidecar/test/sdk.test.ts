@@ -114,10 +114,11 @@ test('read-only adapter boundaries and exact SDK method wiring without network',
   Object.defineProperty(ZamaSDK.prototype, 'relayer', { configurable: true, get: () => backend });
   t.after(() => Object.defineProperty(ZamaSDK.prototype, 'relayer', relayerDescriptor));
   t.mock.method(ZamaSDK.prototype, 'encrypt', async (...[params, options]: Parameters<ZamaSDK['encrypt']>) => {
-    assert.deepEqual(params, { contractAddress: contract, userAddress: wallet.address, values: [{ type: 'euint64', value: 42n }] });
+    const wide = params.values.length === 4;
+    assert.deepEqual(params, { contractAddress: contract, userAddress: wallet.address, values: wide ? [{ type:'euint64',value:42n }, ...[1n,2n,3n].map(value => ({type:'euint256',value}))] : [{ type: 'euint64', value: 42n }] });
     assert.equal(options?.timeout, 120000);
     assert.ok(options?.signal instanceof AbortSignal);
-    return { encryptedValues: [ciphertext as `0x${string}`], inputProof: '0x1234' as const };
+    return { encryptedValues: Array(wide ? 4 : 1).fill(ciphertext) as `0x${string}`[], inputProof: '0x1234' as const };
   });
   t.mock.method(ZamaSDK.prototype, 'terminate', () => {});
   const sdk = createSdk('http://127.0.0.1:1');
@@ -125,6 +126,7 @@ test('read-only adapter boundaries and exact SDK method wiring without network',
   await sdk.prepareEncryption();
   assert.equal(keyLoads, 1);
   assert.deepEqual(await sdk.encrypt(contract, wallet.address, 42n), { handle: ciphertext, inputProof: '0x1234' });
+  assert.equal((await sdk.encryptRedemption(contract, wallet.address, 42n, [1n,2n,3n])).handles.length, 4);
   for (const value of [-1n, 1n << 64n, 42 as unknown as bigint]) {
     await assert.rejects(sdk.encrypt(contract, wallet.address, value), { message: 'invalid_uint64' });
   }
@@ -139,13 +141,18 @@ test('read-only adapter boundaries and exact SDK method wiring without network',
   const mutableTypes = Object.fromEntries(Object.entries(types).map(([name, fields]) => [name, [...fields]]));
   assert.equal(prepared.digest, TypedDataEncoder.hash(prepared.eip712.domain, mutableTypes, prepared.eip712.message));
   const signature = await wallet.signTypedData(prepared.eip712.domain, mutableTypes, prepared.eip712.message);
-  const input: DecryptionInput = { contract, user: wallet.address, handle: ciphertext, keypair: prepared.keypair, eip712: prepared.eip712 };
+  const input: DecryptionInput = { width: 'uint64', contract, user: wallet.address, handle: ciphertext, keypair: prepared.keypair, eip712: prepared.eip712 };
   await assert.rejects(sdk.decrypt(input, 'bad'), { message: 'invalid_signature' });
   await assert.rejects(sdk.decrypt({ ...input, user }, signature), { message: 'signature_user_mismatch' });
   assert.equal(parseCalls, 0);
   assert.equal(decryptCalls, 0);
   assert.equal(await sdk.decrypt(input, signature), 42n);
-  assert.deepEqual(diagnostics, ['Sidecar decrypt relayer: queued status=202\n']);
+  result = [{type:'uint256',value:(1n << 256n) - 1n}];
+  assert.equal(await sdk.decrypt({...input, width:'uint256'}, signature), (1n << 256n) - 1n);
+  await assert.rejects(sdk.decrypt(input, signature), { message: 'decrypt_failed' });
+  result = [{type:'uint256',value:1n << 256n}];
+  await assert.rejects(sdk.decrypt({...input, width:'uint256'}, signature), { message: 'decrypt_failed' });
+  assert.deepEqual(diagnostics, Array(4).fill('Sidecar decrypt relayer: queued status=202\n'));
   for (const bad of [[], [{ type: 'uint64', value: 1n }, { type: 'uint64', value: 2n }],
     [{ type: 'uint32', value: 1n }], [{ type: 'uint64', value: 1 }],
     [{ type: 'uint64', value: -1n }], [{ type: 'uint64', value: 1n << 64n }]]) {
