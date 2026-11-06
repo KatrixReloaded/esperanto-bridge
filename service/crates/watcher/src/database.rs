@@ -183,6 +183,28 @@ mod tests {
         let mut wrong_name = config.clone();
         wrong_name.tls_name = "wrong.test".into();
         assert!(connect_at(&wrong_name, cipher(), vault, false, port).is_err());
+        let identity = zz_watcher::attestation::Identity::generate().unwrap();
+        let domain = zz_watcher::attestation::BindingDomain {
+            chain_id: 11155111,
+            registry: "11".repeat(20),
+            bridge: "22".repeat(20),
+            policy_version: 1,
+        };
+        let identity_vault = Id(zz_watcher::attestation::decode::<32>(
+            &identity.public().unwrap().vault_id,
+        )
+        .unwrap());
+        let store = connect_at(&config, cipher(), identity_vault, true, port).unwrap();
+        let mut deposits = zz_watcher::deposits::Deposits::open(store, &identity, &domain).unwrap();
+        let original = deposits.issue([1; 20], Id([2; 32])).unwrap();
+        drop(deposits);
+        let store = connect_at(&config, cipher(), identity_vault, false, port).unwrap();
+        let mut deposits = zz_watcher::deposits::Deposits::open(store, &identity, &domain).unwrap();
+        assert_eq!(
+            deposits.issue([1; 20], Id([2; 32])).unwrap().id,
+            original.id
+        );
+        assert!(deposits.issue([3; 20], Id([2; 32])).is_err());
         if let Ok(wrong_ca) = std::env::var("CWXMR_TEST_PG_WRONG_CA") {
             let mut untrusted = config.clone();
             untrusted.ca_pem = std::fs::read_to_string(wrong_ca).unwrap();
