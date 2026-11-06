@@ -75,6 +75,75 @@ pub fn observed_amount(output: &WalletOutput) -> AtomicAmount {
     AtomicAmount(output.commitment().amount)
 }
 
+/// Identifier to reserve for a locally scanned output. Keep it within the enclave.
+pub fn input_id(output: &WalletOutput) -> Id {
+    Id(output.key().compress().to_bytes())
+}
+
+/// Check that the transaction uses exactly the uniquely reserved output keys.
+pub fn verify_reserved_inputs(reserved: &[Id], selected: &[Id]) -> Result<(), String> {
+    let reserved_set: std::collections::HashSet<_> = reserved.iter().copied().collect();
+    let selected_set: std::collections::HashSet<_> = selected.iter().copied().collect();
+    if reserved.is_empty()
+        || reserved_set.len() != reserved.len()
+        || selected_set.len() != selected.len()
+        || reserved_set != selected_set
+    {
+        return Err("selected inputs do not match unique reservation".into());
+    }
+    Ok(())
+}
+
+/// Allocate inside `PostgresStore::update`, so the returned mapping is committed before use.
+/// This does not protect against storage rollback or cloned enclaves.
+pub fn allocate_intent(
+    state: &mut zz_core::VaultState,
+    pair: &ViewPair,
+    network: Network,
+    domain: Domain,
+    id: Id,
+    recipient: [u8; 20],
+    nonce: Id,
+) -> Result<zz_core::DepositIntent, String> {
+    if let Some(existing) = state
+        .intents
+        .iter()
+        .find(|i| i.id == id || (i.domain == domain && i.nonce == nonce))
+    {
+        if existing.id != id
+            || existing.domain != domain
+            || existing.recipient != recipient
+            || existing.nonce != nonce
+            || subaddress(pair, network, existing.subaddress_index)? != existing.subaddress
+        {
+            return Err("conflicting deposit intent".into());
+        }
+        return Ok(existing.clone());
+    }
+    let index = state
+        .intents
+        .iter()
+        .map(|i| i.subaddress_index)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or("subaddress space exhausted")?;
+    let intent = zz_core::DepositIntent {
+        id,
+        domain,
+        recipient,
+        nonce,
+        subaddress_index: index,
+        subaddress: subaddress(pair, network, index)?,
+    };
+    state
+        .insert_intent(intent.clone())
+        .map_err(|e| e.to_string())?;
+    Ok(intent)
+}
+
+pub mod chain;
+
 /// Construct and sign offline from already selected and durably reserved outputs and verified
 /// decoys. This function does not establish that these prerequisites hold. The caller must also
 /// verify assignment and payout fencing before releasing bytes for broadcast. Each incompatible
@@ -98,6 +167,11 @@ pub fn prepare_payout(
     if reservation.amount.0 == 0 {
         return Err("zero payout".into());
     }
+    let selected: Vec<Id> = inputs
+        .iter()
+        .map(|o| Id(o.key().compress().to_bytes()))
+        .collect();
+    verify_reserved_inputs(&reservation.input_ids, &selected)?;
     let tx = SignableTransaction::new(
         RctType::ClsagBulletproofPlus,
         outgoing_key,
@@ -183,12 +257,71 @@ mod tests {
     }
 
     #[test]
+    fn intent_allocation_is_idempotent_and_rejects_conflicts() {
+        let mut state = zz_core::VaultState::default();
+        let first = allocate_intent(
+            &mut state,
+            &pair(),
+            Network::Stagenet,
+            domain(),
+            Id([1; 32]),
+            [4; 20],
+            Id([5; 32]),
+        )
+        .unwrap();
+        let retry = allocate_intent(
+            &mut state,
+            &pair(),
+            Network::Stagenet,
+            domain(),
+            Id([1; 32]),
+            [4; 20],
+            Id([5; 32]),
+        )
+        .unwrap();
+        assert!(first == retry);
+        assert_eq!(first.subaddress_index, 1);
+        assert!(allocate_intent(
+            &mut state,
+            &pair(),
+            Network::Stagenet,
+            domain(),
+            Id([1; 32]),
+            [7; 20],
+            Id([5; 32])
+        )
+        .is_err());
+        assert!(allocate_intent(
+            &mut state,
+            &pair(),
+            Network::Mainnet,
+            domain(),
+            Id([1; 32]),
+            [4; 20],
+            Id([5; 32])
+        )
+        .is_err());
+        let second = allocate_intent(
+            &mut state,
+            &pair(),
+            Network::Stagenet,
+            domain(),
+            Id([2; 32]),
+            [4; 20],
+            Id([6; 32]),
+        )
+        .unwrap();
+        assert_eq!(second.subaddress_index, 2);
+    }
+
+    #[test]
     fn rejects_corrupt_journal_bytes() {
         let r = zz_core::ReservedPayout {
             request_id: Id([1; 32]),
             domain: domain(),
             amount: AtomicAmount(1),
             fee_headroom: AtomicAmount(1),
+            input_ids: vec![],
             destination: String::new(),
         };
         let p = zz_core::PreparedPayout {
@@ -206,6 +339,7 @@ mod tests {
             domain: domain(),
             amount: AtomicAmount(1),
             fee_headroom: AtomicAmount(u64::MAX),
+            input_ids: vec![],
             destination: pair().legacy_address(Network::Stagenet).to_string(),
         };
         let result = prepare_payout(
