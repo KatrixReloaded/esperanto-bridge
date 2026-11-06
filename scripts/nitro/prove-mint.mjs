@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Operator-only proof tooling. No transaction signing/broadcast; direct HTTPS RPC is explicit.
-// Backend integration must supply its Nym transport instead of invoking this operator RPC path.
+// Operator verification uses explicit HTTPS RPC. Candidate-only mode never contacts Ethereum;
+// the enclave must verify its exact calldata over Nym before signing or broadcasting.
 import { createRequire } from 'node:module';
 import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -27,13 +27,14 @@ function uint(value, bits) { check(typeof value==='string' && /^(0|[1-9][0-9]*)$
 function same(a,b,label) { check(String(a).toLowerCase()===String(b).toLowerCase(),`${label} mismatch`); }
 function exact(object, keys) { check(object && typeof object==='object' && !Array.isArray(object) && Object.keys(object).sort().join()===keys.split(',').sort().join(),'Unexpected object fields'); }
 function https(url) { const u=new URL(url); check(u.protocol==='https:' && !u.username && !u.password && !u.hash,'Expected HTTPS URL without userinfo'); return u.href; }
-export function validateConfig(config) {
+export function validateConfig(config,{candidate=false}={}) {
   exact(config,'schema,automataRevision,cli,sourceDirectory,prover,rpcUrl,sp1RpcUrl,timeoutSeconds,pins');
   check(config.schema==='cwxmr-nitro-prover-v1' && config.automataRevision===REVISION,'Unsupported prover schema/revision');
   exact(config.cli,'binary,sha256'); hex(config.cli.sha256,32,'CLI SHA256');
   check(parse(config.cli.binary).root && parse(config.sourceDirectory).root,'Absolute CLI/source paths required');
   check(['cpu','network'].includes(config.prover),'Expected explicit cpu or network prover');
-  https(config.rpcUrl); if(config.sp1RpcUrl!==null) https(config.sp1RpcUrl);
+  if(candidate) check(config.prover==='cpu' && config.rpcUrl===null && config.sp1RpcUrl===null,'Candidate service requires CPU and null RPC URLs');
+  else { https(config.rpcUrl); if(config.sp1RpcUrl!==null) https(config.sp1RpcUrl); }
   check(Number.isInteger(config.timeoutSeconds) && config.timeoutSeconds>0 && config.timeoutSeconds<=540,'Prover timeout must be 1..540 seconds');
   const p=config.pins;
   exact(p,'chainId,bridge,bridgeCodeHash,registry,registryCodeHash,adapter,adapterCodeHash,verifier,verifierCodeHash,zkVerifier,zkVerifierCodeHash,coprocessor,programId,rootCert,proofSelector,policyVersion,pcrTuple');
@@ -153,14 +154,20 @@ export function proverEnvironment(env,mode) {
   for(const name of ['SSL_CERT_FILE','SSL_CERT_DIR','TMPDIR']) if(env[name]) out[name]=env[name];
   return out;
 }
-async function prove(config,report) {
+async function prove(config,report,signal) {
   const source=resolve(config.sourceDirectory);
-  same((await run('git',['-C',source,'rev-parse','HEAD'])).stdout.trim(),REVISION,'source revision');
+  same((await run('git',['-C',source,'rev-parse','HEAD'],{signal})).stdout.trim(),REVISION,'source revision');
   const patch=await readFile(new URL('./automata-host-prover.patch',import.meta.url),'utf8');
-  check((await run('git',['-C',source,'diff','--binary','HEAD'],{maxBuffer:1024*1024})).stdout===patch,'Prover source must contain exactly the reviewed host-only patch');
+  check((await run('git',['-C',source,'diff','--binary','HEAD'],{signal,maxBuffer:1024*1024})).stdout===patch,'Prover source must contain exactly the reviewed host-only patch');
   const binary=resolve(config.cli.binary);
   same('0x'+createHash('sha256').update(await readBounded(binary,512*1024*1024)).digest('hex'),config.cli.sha256,'CLI checksum');
-  const env=proverEnvironment(process.env,config.prover), dir=await mkdtemp(join(tmpdir(),'cwxmr-proof-'));
+  const env=proverEnvironment(process.env,config.prover);
+  if(config.prover==='cpu') {
+    // This pinned SP1 build wraps Groth16 with Docker; fail before expensive CPU work.
+    try { await run('docker',['info'],{signal,env,timeout:10000,maxBuffer:1024*1024}); }
+    catch { throw Error('CPU Groth16 proving requires a running Docker daemon; docker info failed'); }
+  }
+  const dir=await mkdtemp(join(tmpdir(),'cwxmr-proof-'));
   try {
     // Upstream loads .env from CWD/parents. Refuse any parent .env; never load deployment secrets.
     for(let at=dir;;at=dirname(at)) { try { await stat(join(at,'.env')); throw Error('Prover working-directory ancestor contains .env'); } catch(e) { if(e.code!=='ENOENT') throw e; } if(dirname(at)===at) break; }
@@ -168,10 +175,33 @@ async function prove(config,report) {
     await writeFile(reportPath,report,{flag:'wx',mode:0o600});
     const args=['prove','--report',reportPath,'--sp1','--prover',config.prover,'--out',out];
     if(config.prover==='network' && config.sp1RpcUrl!==null) args.push('--sp1-rpc-url',config.sp1RpcUrl);
-    try { await run(binary,args,{cwd:dir,env,timeout:config.timeoutSeconds*1000,maxBuffer:MAX_JSON}); }
-    catch { throw Error('Pinned prover failed/timed out; inspect account before retrying (a paid request may remain active)'); }
+    signal?.throwIfAborted();
+    const processTask=run(binary,args,{cwd:dir,env,detached:true,maxBuffer:MAX_JSON});
+    const stop=()=>{ if(Number.isInteger(processTask.child.pid)) { try { process.kill(-processTask.child.pid,'SIGKILL'); } catch {} } };
+    const timer=setTimeout(stop,config.timeoutSeconds*1000);
+    signal?.addEventListener('abort',stop,{once:true});
+    if(signal?.aborted) stop();
+    try { await processTask; }
+    catch { throw Error(config.prover==='network'
+      ? 'Pinned prover failed/timed out; inspect account before retrying (a paid request may remain active)'
+      : 'CPU prover failed/timed out; inspect local prover and Docker resources before retrying'); }
+    finally { clearTimeout(timer); signal?.removeEventListener('abort',stop); stop(); }
     return await json(out);
   } finally { await rm(dir,{recursive:true,force:true}); }
+}
+// Shape and binding checks only. The untrusted host cannot certify a valid proof or mint.
+export function assembleCandidate(config,request,report,proof,nowMs=Date.now()) {
+  const p=validateConfig(config,{candidate:true}),expected=validateRequest(request,p,nowMs);
+  const document=inspectDocument(report,expected,p,nowMs);
+  const evidence=validateProof(proof,request,expected,document,p,nowMs);
+  const data=new E.Interface(bridgeAbi).encodeFunctionData('confidentialMint',[request.authorization,request.inputProof,request.signature,evidence]);
+  return {schema:'cwxmr-mint-proof-candidate-v1',verification:'candidate_unverified',transaction:{to:p.bridge,data,value:'0'}};
+}
+export async function proveCandidate(config,request,report,{signal}={}) {
+  const p=validateConfig(config,{candidate:true}),expected=validateRequest(request,p);
+  inspectDocument(report,expected,p);
+  const proof=await prove(config,report,signal);
+  return assembleCandidate(config,request,report,proof);
 }
 export async function assemble(config,request,report,proof) {
   const p=validateConfig(config),expected=validateRequest(request,p),document=inspectDocument(report,expected,p);

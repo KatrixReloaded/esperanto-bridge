@@ -3,7 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
-import { validateConfig,validateRequest,inspectDocument,validateProof,proverEnvironment,REVISION,JOURNAL,MINT } from './prove-mint.mjs';
+import { validateConfig,validateRequest,inspectDocument,validateProof,proverEnvironment,assembleCandidate,REVISION,JOURNAL,MINT } from './prove-mint.mjs';
+import { createProverServer } from './prover-server.mjs';
 const require=createRequire(new URL('../../contracts/package.json',import.meta.url));
 const E=require('ethers'),cbor=require('cbor'),coder=E.AbiCoder.defaultAbiCoder();
 const vector=JSON.parse(await readFile(new URL('../../contracts/test/fixtures/mint-binding-v1.json',import.meta.url)));
@@ -85,4 +86,53 @@ test('real upstream historical NSM encoding parses but cannot authorize a bridge
  const f=await fixture();
  const report=await readFile(new URL('../../contracts/test/fixtures/automata-attestation-1.report',import.meta.url));
  assert.throws(()=>inspectDocument(report,f.expected,f.pins,now),/public_key mismatch/);
+});
+
+test('candidate assembly is offline, explicitly unverified and requires CPU without RPC URLs',async()=>{
+ const f=await fixture(),config={...f.config,rpcUrl:null};
+ const result=assembleCandidate(config,f.request,f.report,f.proof,now);
+ assert.equal(result.verification,'candidate_unverified');
+ assert.equal(result.schema,'cwxmr-mint-proof-candidate-v1');
+ assert.equal(result.transaction.to,config.pins.bridge);
+ assert.equal(result.transaction.value,'0');
+ const decoded=new E.Interface(require('./abi/Bridge.json')).decodeFunctionData('confidentialMint',result.transaction.data);
+ assert.equal(decoded.evidence.proof,f.proof.onchain_proof);
+ assert.throws(()=>assembleCandidate({...config,rpcUrl:'https://rpc.invalid'},f.request,f.report,f.proof,now),/null RPC/);
+ assert.throws(()=>assembleCandidate({...config,prover:'network'},f.request,f.report,f.proof,now),/requires CPU/);
+ assert.throws(()=>assembleCandidate(config,f.request,f.report,{...f.proof,onchain_proof:'0xdeadbeef1234'},now),/selector/);
+ await serve(config,{prover:async(c,r,d)=>assembleCandidate(c,r,d,f.proof,now)},async url=>{
+  const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({request:f.request,document:f.report.toString('base64')})});
+  assert.equal(response.status,200);assert.deepEqual(await response.json(),result);
+ });
+});
+
+async function serve(config,options,fn) {
+ const server=createProverServer(config,options);
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try { await fn(`http://127.0.0.1:${server.address().port}/prove`); }
+ finally { server.closeAllConnections(); await new Promise(resolve=>server.close(resolve)); }
+}
+test('loopback service bounds input, rejects malformed documents and sanitizes failures',async()=>{
+ const f=await fixture(),config={...f.config,rpcUrl:null};let calls=0;
+ const prover=async()=>{calls++;throw Error('private process stderr must not escape');};
+ await serve(config,{prover},async url=>{
+  const post=body=>fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  for(const body of [{request:f.request,document:'@@@'},{request:f.request,document:'AA=='+' '.repeat(512*1024)},{request:f.request,document:Buffer.alloc(65537).toString('base64')}]) {
+   const response=await post(body);assert.equal(response.status,400);
+  }
+  assert.equal(calls,0);
+  const response=await post({request:f.request,document:f.report.toString('base64')});
+  assert.equal(response.status,502);assert.deepEqual(await response.json(),{error:'prover_failed'});assert.equal(calls,1);
+ });
+});
+test('loopback service allows one job and aborts it before its bounded total deadline',async()=>{
+ const f=await fixture(),config={...f.config,rpcUrl:null};let started,aborted=false;
+ const running=new Promise(resolve=>{started=resolve;});
+ const prover=async(_c,_r,_d,{signal})=>{started();await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>{aborted=true;reject(Error('aborted'));},{once:true}));};
+ await serve(config,{prover,deadlineMs:100},async url=>{
+  const post=()=>fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({request:f.request,document:f.report.toString('base64')})});
+  const first=post();await running;
+  const busy=await post();assert.equal(busy.status,503);assert.deepEqual(await busy.json(),{error:'prover_busy'});
+  const timeout=await first;assert.equal(timeout.status,504);assert.deepEqual(await timeout.json(),{error:'prover_timeout'});assert.equal(aborted,true);
+ });
 });
