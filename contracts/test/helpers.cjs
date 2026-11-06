@@ -16,12 +16,13 @@ async function rejects(fn, match) {
 }
 async function time() { return Number((await E.provider.getBlock('latest')).timestamp); }
 async function jump(seconds) { await hre.network.provider.send('evm_increaseTime',[seconds]); await hre.network.provider.send('evm_mine'); }
-async function fixture() {
+async function fixture({unsafeVerifier=false}={}) {
  assert.equal(hre.network.name,'hardhat'); assert.ok(hre.fhevm.isMock);
  const [owner,user,relayer,readerA,readerB,outsider] = await E.getSigners();
- const mock = await (await E.getContractFactory('MockNitroVerifier')).deploy();
+ const mock = await (await E.getContractFactory(unsafeVerifier?'UnsafeTestNitroVerifier':'MockNitroVerifier')).deploy();
  const addr=await mock.getAddress(), hash=E.keccak256(await E.provider.getCode(addr));
- const adapter=await(await E.getContractFactory('NitroVerifierAdapter')).deploy(addr,hash,await mock.rootCert(),await mock.program(),2,'0x12345678',addr,hash);
+ const selector=unsafeVerifier?await mock.proofSelector():'0x12345678';
+ const adapter=await(await E.getContractFactory('NitroVerifierAdapter')).deploy(addr,hash,await mock.rootCert(),await mock.program(),2,selector,addr,hash);
  const bridge=await(await E.getContractFactory('Bridge')).deploy(owner.address,await adapter.getAddress());
  const registry=await E.getContractAt('VaultRegistry',await bridge.registry());
  const token=await E.getContractAt('CWXMR',await bridge.token());

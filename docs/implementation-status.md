@@ -14,6 +14,8 @@ Sepolia deployment (chain 11155111), checked through PublicNode on 2026-11-06:
 
 The adapter reports a valid pinned configuration. This is not proof of a successful live mint; reviewed PCR approval, fresh Nitro evidence, proof generation and real FHE execution remain pending. Registration and renewal are not part of the protocol.
 
+The user also authorized a separate [unsafe Linux test deployment](unsafe-test.md) to exercise the real stagenet/Sepolia token flow before renting Nitro. `UnsafeTestNitroVerifier` accepts fabricated journals; it is deliberately not a custody trust anchor. Its new adapter/Bridge/token must remain separate from the addresses above. The contract and deployment instructions are ready (19 local contract tests passed); the feature-gated development runner is being integrated. No unsafe deployment or live round trip has been performed.
+
 ## Implemented components
 
 | Area | Implemented | Validation boundary |
