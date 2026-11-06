@@ -70,6 +70,7 @@ pub trait PayoutJournal {
     ) -> Result<Option<PreparedPayout>, Self::Error>;
 }
 
+pub mod deposits;
 pub mod storage;
 
 impl AtomicAmount {
@@ -98,6 +99,10 @@ pub struct VaultState {
     pub payouts: Vec<PayoutState>,
     pub mint_results: Vec<(Id, AtomicAmount)>,
     pub evm_operations: Vec<EvmOperation>,
+    #[serde(default)]
+    pub deposits: Vec<deposits::Deposit>,
+    #[serde(default)]
+    pub monero_cursor: Option<ChainEvidence>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

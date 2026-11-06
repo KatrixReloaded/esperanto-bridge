@@ -6550,6 +6550,7 @@ dependencies = [
  "hmac 0.12.1",
  "monero-wallet",
  "openssl",
+ "postgres",
  "rand 0.8.8",
  "reqwest 0.12.28",
  "serde",

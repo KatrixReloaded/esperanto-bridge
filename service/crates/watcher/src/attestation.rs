@@ -77,6 +77,20 @@ fn addr(key: &PKey<Private>) -> Result<[u8; 20]> {
     Ok(Keccak256::digest(raw(key)?)[12..].try_into()?)
 }
 impl Identity {
+    pub(crate) fn wallet_view_pair(&self) -> Result<monero_wallet::ViewPair> {
+        let spend = zeroize::Zeroizing::new(monero_wallet::ed25519::Scalar::read(
+            &mut &self.monero_spend[..],
+        )?);
+        zz_monero::view_pair(&spend).map_err(anyhow::Error::msg)
+    }
+
+    /// Stable private IDs survive recovery without exporting the wallet spend key.
+    pub(crate) fn deposit_id_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>> {
+        use hmac::{Hmac, Mac};
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(&self.monero_spend)?;
+        mac.update(b"cwxmr/deposit-id-key/v1");
+        Ok(zeroize::Zeroizing::new(mac.finalize().into_bytes().into()))
+    }
     pub fn generate() -> Result<Self> {
         let spend = zeroize::Zeroizing::new(monero_wallet::ed25519::Scalar::random(
             &mut rand::rngs::OsRng,

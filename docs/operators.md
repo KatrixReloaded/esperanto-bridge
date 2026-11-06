@@ -1,6 +1,6 @@
 # Nitro operator runbook
 
-This is a locally tested foundation, not a deployed or usable bridge. The operator will configure the available AWS account. No AWS account was accessed or resources provisioned here, and Nitro hardware validation remains pending. The runtime deliberately reports `bridge_actions_enabled:false`: authenticated chain verification, deposit/payout orchestration, independent payout fencing and live FHE/proof integration are release gates. Never fund these vaults yet.
+Sepolia contracts are deployed; the backend is not yet a usable bridge. Read-only AWS profile, quota and instance capability checks were performed; no AWS resources were provisioned. The operator has postponed EC2 rental until local work is complete. The runtime deliberately reports `bridge_actions_enabled:false`: chain integration, deposit/payout orchestration, payout fencing and live FHE/proof integration remain gates. The stagenet PoC may explicitly trust configured chain nodes; mainnet and malicious-operator custody remain out of scope. Never fund these vaults yet.
 
 ## Boundary and keys
 
@@ -16,7 +16,9 @@ KMS policy administrators, account owners able to change those administrators, a
 
 ## Configure and build (Linux x86_64)
 
-Review [infra/operator.yaml](../infra/operator.yaml); it is a template, not an instruction to provision now. `m6i.2xlarge` is a paid initial sizing candidate (8 vCPU/32 GiB), with enclave allocator 2 vCPU/8192 MiB. SDK peak memory is unmeasured. Operator must verify regional AMI, supported Nitro instance, price/quota/credits and installation procedures before authorizing any resources. The template requires IMDSv2 and an existing subnet/security group. KMS recovery defaults disabled: first obtain the key ARN with no recipient access, build the configured EIF, then enable only its reviewed nonzero PCR0/PCR1/PCR2. Deploy using the specified policy-administration role so KMS's lockout-safety checks remain satisfied. No root IAM-delegation wildcard is included.
+Review [infra/operator.yaml](../infra/operator.yaml); do not provision until local checks are complete. The default `m6i.xlarge` has 4 vCPUs/16 GiB and supports Nitro Enclaves; `m6i.large` does not. The optional `m6i.2xlarge` has 8 vCPUs/32 GiB. Allocate 2 vCPU/8192 MiB to the enclave initially; SDK/Nym peak memory remains unmeasured. The Mumbai account checked on 2026-11-06 had a 5-vCPU Standard On-Demand quota, so the larger option exceeds it. Free-plan eligibility is separate from quotas and instance support.
+
+Verify regional AMI, price, quota and credits before launching. The template requires IMDSv2 and an existing subnet/security group, allows an existing SSH `KeyName`, and provisions an encrypted 100 GiB gp3 volume. KMS recovery defaults disabled: initially leave PCR parameters empty, obtain the key ARN with no recipient access, then build the configured EIF. Enabling recovery requires all three reviewed nonzero PCRs; template rules reject missing values. Use the specified policy-administration role so KMS lockout-safety checks remain satisfied. No root IAM-delegation wildcard is included.
 
 Install and independently verify AWS `nitro-cli 1.5.2` (source revision `1c496ed730d2dc41ec5bff6df89b4f3185e18840`), Docker, Python3, jq and sha256sum on the Linux builder. Record package/kernel/bootstrap artifacts. Configure the parent allocator using [infra/allocator.yaml](../infra/allocator.yaml), then restart its allocator service. No debug/console launch is supported.
 

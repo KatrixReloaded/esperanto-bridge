@@ -2,7 +2,7 @@
 
 Monero stagenet ↔ confidential cwXMR on Ethereum Sepolia, with independent AWS Nitro vaults and Automata Nitro attestation.
 
-This repository contains a locally tested implementation foundation, not a deployed or end-to-end bridge. The [implementation status](docs/implementation-status.md) distinguishes working components from remaining integration gates. The [architecture plan](docs/cwxmr-bridge-plan.md) describes the target behavior.
+The contracts are deployed on Sepolia; the backend is a locally tested foundation and does not yet form an end-to-end bridge. The [implementation status](docs/implementation-status.md) distinguishes working components from remaining integration gates. The [architecture plan](docs/cwxmr-bridge-plan.md) describes the target behavior. AWS provisioning is postponed until local integration and packaging checks are complete.
 
 ## Layout
 

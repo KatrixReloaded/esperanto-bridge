@@ -1,6 +1,18 @@
 # Implementation status
 
-The four worker tracks provide a local foundation for a private-to-private Monero ↔ Ethereum bridge. They do not yet form a runnable end-to-end bridge. No shared-network contracts or AWS resources have been deployed.
+The four worker tracks provide a local foundation for a private-to-private Monero ↔ Ethereum bridge. They do not yet form a runnable end-to-end bridge. The user deployed the Sepolia contracts; no AWS resources have been provisioned. AWS rental is postponed until local work is complete. The user explicitly approved trusted Monero and Ethereum nodes for the stagenet-only PoC; that assumption must not be described as independent consensus verification.
+
+Sepolia deployment (chain 11155111), checked through PublicNode on 2026-11-06:
+
+| Contract | Address |
+| --- | --- |
+| Automata Nitro verifier | `0x61997FD1eC0BcdCEFA5Dfe714B69558293E60822` |
+| Nitro adapter | `0x9A93576c438c7dbF293572D369d41515F84fAc2D` |
+| Bridge | `0x1C833095c0cd2d50e08dF0031052A865f026C319` |
+| cwXMR | `0xfB60968c57CcE889C9A9E5f912C88Da75aeA23c6` |
+| VaultRegistry | `0xF83171035445b01B0F70f71Dc2aff923f681D279` |
+
+The adapter reports a valid pinned configuration. This is not proof of a successful live mint; reviewed PCR approval, fresh Nitro evidence, proof generation and real FHE execution remain pending. Registration and renewal are not part of the protocol.
 
 ## Implemented components
 
@@ -19,7 +31,7 @@ The sidecar's only current server Ethereum RPC client is configured for enclave-
 ## Required before an end-to-end demonstration
 
 1. **Validate the real Nitro image and recovery path.** Build the EIF, record reproducible non-debug measurements, exercise first proven mint, fresh identity discovery and restart on hardware, verify peer TLS against an independently trusted Ethereum state, and test KMS recipient enforcement. Local tests cannot establish these properties.
-2. **Complete and approve Automata per-mint verification.** Pin the deployed verifier, its mutable configuration and governance assumptions. Generate a fresh proof containing this bridge's keys, complete canonical mint request and domain. The historical upstream fixture only tests schema decoding. Shared-network deployment remains disabled.
+2. **Validate Automata per-mint verification.** The verifier and adapter are deployed and pinned. Generate a fresh proof containing this bridge's keys, complete canonical mint request and domain. The historical upstream fixture only tests schema decoding; actual Nitro proof verification remains pending.
 3. **Implement authenticated chain inputs.** Supply Monero consensus/canonicality and Ethereum finalized-state sources. A daemon response, decrypted output, TLS connection or matching block hash alone does not establish consensus. Add durable duplicate-output handling, change classification, fee and decoy verification, and deposit eligibility.
 4. **Wire the bridge operations.** Connect encrypted PostgreSQL over enclave-terminated authenticated TLS, SDK encryption/decryption, per-request Nitro proving, transaction submission and receipt reconciliation. Implement deposit issuance/observation/mint and redemption observation/reservation/claim/payment/settlement. The runtime exposes identity, health and a separate discovery-only attestation route; no public mint-attestation or signing route.
 5. **Resolve exclusive spending and rollback recovery.** Define and test a rollback-resistant fencing mechanism before enabling Monero broadcasts. PostgreSQL locks and encrypted backups do not stop hostile clones. Preserve exact signed bytes across uncertain outcomes; do not introduce timeout-based reassignment of an assigned payment.

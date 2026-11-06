@@ -9,6 +9,15 @@ Parameters:
   SecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
     Description: Existing egress-enabled group; expose only raw TCP after registry/TLS validation
+  InstanceType:
+    Type: String
+    Default: m6i.xlarge
+    AllowedValues: [m6i.xlarge, m6i.2xlarge]
+    Description: Nitro-capable x86 parent; m6i.large does not support enclaves
+  KeyName:
+    Type: String
+    Default: ''
+    Description: Existing EC2 SSH key pair name; configure another access method if omitted
   PolicyAdministratorArn:
     Type: String
     Description: Trusted KMS policy administrator role ARN; it can change recovery confidentiality policy
@@ -19,15 +28,29 @@ Parameters:
     Description: Keep false until the final measured image PCR tuple is reviewed
   Pcr0:
     Type: String
-    AllowedPattern: '(?!0{96})[0-9a-fA-F]{96}'
+    Default: ''
+    AllowedPattern: '(^$)|((?!0{96})[0-9a-fA-F]{96})'
   Pcr1:
     Type: String
-    AllowedPattern: '(?!0{96})[0-9a-fA-F]{96}'
+    Default: ''
+    AllowedPattern: '(^$)|((?!0{96})[0-9a-fA-F]{96})'
   Pcr2:
     Type: String
-    AllowedPattern: '(?!0{96})[0-9a-fA-F]{96}'
+    Default: ''
+    AllowedPattern: '(^$)|((?!0{96})[0-9a-fA-F]{96})'
+Rules:
+  RecoveryRequiresMeasurements:
+    RuleCondition: !Equals [!Ref RecoveryEnabled, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref Pcr0, '']]
+        AssertDescription: Recovery requires reviewed PCR0
+      - Assert: !Not [!Equals [!Ref Pcr1, '']]
+        AssertDescription: Recovery requires reviewed PCR1
+      - Assert: !Not [!Equals [!Ref Pcr2, '']]
+        AssertDescription: Recovery requires reviewed PCR2
 Conditions:
   EnableRecipientRecovery: !Equals [!Ref RecoveryEnabled, 'true']
+  HasSshKey: !Not [!Equals [!Ref KeyName, '']]
 Resources:
   ParentRole:
     Type: AWS::IAM::Role
@@ -107,9 +130,10 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !Ref ImageId
-      # 8 vCPUs / 32 GiB leaves capacity for a 2 vCPU, 8 GiB enclave + parent.
+      # Minimum option: 4 vCPUs / 16 GiB; allocate 2 vCPU / 8 GiB to the enclave.
       # This is a paid instance, NOT a free-tier recommendation or a measured SDK sizing result.
-      InstanceType: m6i.2xlarge
+      InstanceType: !Ref InstanceType
+      KeyName: !If [HasSshKey, !Ref KeyName, !Ref 'AWS::NoValue']
       IamInstanceProfile: !Ref ParentProfile
       SubnetId: !Ref SubnetId
       SecurityGroupIds: [!Ref SecurityGroupId]
@@ -120,7 +144,7 @@ Resources:
         HttpPutResponseHopLimit: 1
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
-          Ebs: {VolumeSize: 40, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+          Ebs: {VolumeSize: 100, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
       Tags: [{Key: Name, Value: cwxmr-nitro-parent}]
 Outputs:
   InstanceId: {Value: !Ref Parent}

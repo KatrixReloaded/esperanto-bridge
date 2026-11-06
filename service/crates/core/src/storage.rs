@@ -76,6 +76,23 @@ impl PostgresStore {
     pub fn new(client: Client, cipher: Cipher) -> Self {
         Self { client, cipher }
     }
+    pub fn migrate(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.client
+            .batch_execute(include_str!("../../../migrations/001_encrypted_vault.sql"))?;
+        Ok(())
+    }
+    pub fn load(&mut self, vault: Id) -> Result<VaultState, Box<dyn Error + Send + Sync>> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT ciphertext FROM encrypted_vault_state WHERE vault_id=$1",
+                &[&&vault.0[..]],
+            )?
+            .ok_or("vault state missing; explicit recovery required")?;
+        let state = self.cipher.open(vault, &row.get::<_, Vec<u8>>(0))?;
+        validate_domain(vault, &state)?;
+        Ok(state)
+    }
     pub fn initialize(&mut self, vault: Id) -> Result<(), Box<dyn Error + Send + Sync>> {
         let blob = self.cipher.seal(vault, &VaultState::default())?;
         let count = self.client.execute("INSERT INTO encrypted_vault_state(vault_id,ciphertext) VALUES($1,$2) ON CONFLICT DO NOTHING", &[&&vault.0[..], &blob])?;
@@ -121,6 +138,10 @@ fn validate_domain(vault: Id, state: &VaultState) -> Result<(), Box<dyn Error + 
             .evm_operations
             .iter()
             .any(|op| op.domain.vault != vault)
+        || state
+            .deposits
+            .iter()
+            .any(|d| !state.intents.iter().any(|i| i.id == d.intent_id))
     {
         return Err("vault domain mismatch".into());
     }
