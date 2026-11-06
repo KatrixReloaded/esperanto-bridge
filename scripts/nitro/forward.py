@@ -120,8 +120,11 @@ def main():
     parser.add_argument("--cid", type=int, default=3)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--target", type=int)
+    parser.add_argument("--idle", type=int, default=60, help="maximum idle seconds (1 to 600)")
     parser.add_argument("--allow", help="JSON array of exact outbound HTTPS hostnames")
     args = parser.parse_args()
+    if not 1 <= args.idle <= 600:
+        parser.error("--idle must be between 1 and 600 seconds")
     if args.mode == "connect-proxy":
         allowed = json.loads(args.allow or "[]")
         if not allowed or not all(isinstance(h, str) and h for h in allowed):
@@ -133,7 +136,7 @@ def main():
         target = ("vsock", args.cid, args.target) if args.mode == "tcp-vsock" else ("tcp", args.host, args.target)
         family = socket.AF_INET if args.mode == "tcp-vsock" else socket.AF_VSOCK
         address = ("127.0.0.1", args.listen) if family == socket.AF_INET else (socket.VMADDR_CID_ANY, args.listen)
-        accept_loop(family, address, lambda c: relay(c, connect(target)))
+        accept_loop(family, address, lambda c: relay(c, connect(target), idle=args.idle))
 
 
 if __name__ == "__main__":

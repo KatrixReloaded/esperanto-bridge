@@ -30,6 +30,7 @@ try:
         ["tcp-vsock", "--listen", "8444", "--cid", "3", "--target", "8444"],
         ["tcp-vsock", "--listen", "8445", "--cid", "3", "--target", "8445"],
         ["tcp-vsock", "--listen", "8446", "--cid", "3", "--target", "8446"],
+        ["tcp-vsock", "--listen", "8447", "--cid", "3", "--target", "8447", "--idle", "600"],
         ["tcp-vsock", "--listen", "8888", "--cid", "3", "--target", "8888"],
     ]:
         children.append(subprocess.Popen(["/usr/bin/python3", "/app/forward.py", *args]))

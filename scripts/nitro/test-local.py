@@ -22,6 +22,16 @@ def module(name, filename):
 
 
 class LocalTests(unittest.TestCase):
+    def test_forwarding_idle_deadline_is_bounded(self):
+        forward = module("forward_idle", "forward.py")
+        source, left = socket.socketpair()
+        right, destination = socket.socketpair()
+        with source, destination:
+            with self.assertRaises(TimeoutError):
+                forward.relay(left, right, idle=0.01)
+        command = ["python3", ROOT / "scripts/nitro/forward.py", "tcp-vsock", "--listen", "10000", "--target", "10001", "--idle", "601"]
+        self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+
     def test_connect_gateway_port_requires_exact_allowlist(self):
         forward = module("forward", "forward.py")
         for authority, allowed, permitted in [("nym.test:9001", ["nym.test:9001"], True),
