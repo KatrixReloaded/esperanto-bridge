@@ -6548,6 +6548,7 @@ dependencies = [
  "base64 0.22.1",
  "hex",
  "hmac 0.12.1",
+ "monero-wallet",
  "openssl",
  "rand 0.8.8",
  "reqwest 0.12.28",
@@ -6558,6 +6559,7 @@ dependencies = [
  "time",
  "zeroize",
  "zz-core",
+ "zz-monero",
  "zz-zama",
 ]
 

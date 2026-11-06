@@ -17,6 +17,7 @@ pub const TYPE: &str = "CWXMRNitroBinding(uint256 chainId,address registry,addre
 /// Private DER keys are serialized only into an authenticated encrypted backup, inside the enclave.
 #[derive(Serialize, Deserialize)]
 pub struct Identity {
+    monero_spend: Vec<u8>,
     mint: Vec<u8>,
     decrypt: Vec<u8>,
     auth: Vec<u8>,
@@ -30,6 +31,18 @@ pub struct BindingDomain {
     pub registry: String,
     pub bridge: String,
     pub policy_version: u64,
+}
+impl BindingDomain {
+    /// Stable canonical deployment context: policy upgrades retain recoverability.
+    pub fn recovery_domain(&self) -> Result<Vec<u8>> {
+        Ok([
+            b"cwxmr/recovery/v1".as_slice(),
+            &self.chain_id.to_be_bytes(),
+            &decode::<20>(&self.registry)?,
+            &decode::<20>(&self.bridge)?,
+        ]
+        .concat())
+    }
 }
 #[derive(Debug, Serialize)]
 pub struct PublicIdentity {
@@ -63,6 +76,11 @@ fn addr(key: &PKey<Private>) -> Result<[u8; 20]> {
 }
 impl Identity {
     pub fn generate() -> Result<Self> {
+        let spend = zeroize::Zeroizing::new(monero_wallet::ed25519::Scalar::random(
+            &mut rand::rngs::OsRng,
+        ));
+        let mut monero_spend = Vec::new();
+        spend.write(&mut monero_spend)?;
         let mint = ec_key(Nid::SECP256K1)?;
         let decrypt = ec_key(Nid::SECP256K1)?;
         let auth = PKey::generate_ed25519()?;
@@ -82,12 +100,43 @@ impl Identity {
         cert.set_not_after(Asn1Time::days_from_now(30)?.as_ref())?;
         cert.sign(&tls, MessageDigest::sha256())?;
         Ok(Self {
+            monero_spend,
             mint: mint.private_key_to_der()?,
             decrypt: decrypt.private_key_to_der()?,
             auth: auth.private_key_to_der()?,
             tls: tls.private_key_to_der()?,
             certificate: cert.build().to_der()?,
         })
+    }
+    pub fn validate_wallet(&self) -> Result<()> {
+        ensure!(
+            self.monero_spend.len() == 32,
+            "invalid Monero spend encoding"
+        );
+        let mint = PKey::private_key_from_der(&self.mint)?;
+        let decrypt = PKey::private_key_from_der(&self.decrypt)?;
+        let auth = PKey::private_key_from_der(&self.auth)?;
+        ensure!(
+            mint.ec_key()?.group().curve_name() == Some(Nid::SECP256K1)
+                && decrypt.ec_key()?.group().curve_name() == Some(Nid::SECP256K1),
+            "invalid identity key curve"
+        );
+        ensure!(
+            auth.id() == openssl::pkey::Id::ED25519 && auth.raw_public_key()?.len() == 32,
+            "invalid authentication key"
+        );
+        ensure!(!mint.public_eq(&decrypt), "identity keys must be separate");
+        ensure!(
+            self.certificate()?
+                .public_key()?
+                .public_eq(self.tls_key()?.as_ref()),
+            "TLS certificate key mismatch"
+        );
+        let spend = zeroize::Zeroizing::new(monero_wallet::ed25519::Scalar::read(
+            &mut &self.monero_spend[..],
+        )?);
+        zz_monero::view_pair(&spend).map_err(anyhow::Error::msg)?;
+        Ok(())
     }
     pub fn tls_key(&self) -> Result<PKey<Private>> {
         Ok(PKey::private_key_from_der(&self.tls)?)
@@ -145,6 +194,7 @@ impl Identity {
 impl Drop for Identity {
     fn drop(&mut self) {
         use zeroize::Zeroize;
+        self.monero_spend.zeroize();
         self.mint.zeroize();
         self.decrypt.zeroize();
         self.auth.zeroize();
@@ -217,6 +267,32 @@ mod tests {
         let encoded = serde_json::to_vec(&id).unwrap();
         let restored: Identity = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(restored.public().unwrap().vault_id, public.vault_id);
+    }
+    #[test]
+    fn canonical_recovery_survives_policy_upgrade() {
+        let first = BindingDomain {
+            chain_id: 11155111,
+            registry: "0xAAbb".repeat(1) + &"11".repeat(18),
+            bridge: "22".repeat(20),
+            policy_version: 1,
+        };
+        let mut second = first.clone();
+        second.registry = first
+            .registry
+            .to_lowercase()
+            .trim_start_matches("0x")
+            .to_owned();
+        second.policy_version = 99;
+        assert_eq!(
+            first.recovery_domain().unwrap(),
+            second.recovery_domain().unwrap()
+        );
+        second.chain_id += 1;
+        assert_ne!(
+            first.recovery_domain().unwrap(),
+            second.recovery_domain().unwrap()
+        );
+        Identity::generate().unwrap().validate_wallet().unwrap();
     }
     #[test]
     fn no_native_attestation() {

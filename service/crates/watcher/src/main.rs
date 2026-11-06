@@ -43,8 +43,8 @@ fn recover(config: &Config) -> Result<Identity> {
         host.get("http://127.0.0.1:8444/credentials").send()?,
     )?)?;
     let kms = Kms::new(config.kms.clone())?;
-    let domain = serde_json::to_string(&config.domain)?;
-    let context = hex::encode(openssl::sha::sha256(domain.as_bytes()));
+    let domain = config.domain.recovery_domain()?;
+    let context = hex::encode(openssl::sha::sha256(&domain));
     let response = host.get("http://127.0.0.1:8444/backup").send()?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         ensure!(
@@ -53,7 +53,7 @@ fn recover(config: &Config) -> Result<Identity> {
         );
         let identity = Identity::generate()?;
         let (key, wrapped) = kms.recover(None, &context, &credentials)?;
-        let envelope = Envelope::seal(&identity, &key, wrapped, domain.as_bytes())?;
+        let envelope = Envelope::seal(&identity, &key, wrapped, &domain)?;
         bounded(
             host.put("http://127.0.0.1:8444/backup")
                 .json(&envelope)
@@ -62,7 +62,7 @@ fn recover(config: &Config) -> Result<Identity> {
         // Read back authenticated ciphertext before publishing this identity.
         let stored: Envelope =
             serde_json::from_slice(&bounded(host.get("http://127.0.0.1:8444/backup").send()?)?)?;
-        let restored = stored.open(&key, domain.as_bytes())?;
+        let restored = stored.open(&key, &domain)?;
         ensure!(
             restored.public()?.vault_id == identity.public()?.vault_id,
             "backup readback mismatch"
@@ -73,14 +73,15 @@ fn recover(config: &Config) -> Result<Identity> {
     } else {
         let envelope: Envelope = serde_json::from_slice(&bounded(response)?)?;
         let (key, _) = kms.recover(Some(&envelope.wrapped_key), &context, &credentials)?;
-        let identity = envelope.open(&key, domain.as_bytes())?;
+        let identity = envelope.open(&key, &domain)?;
         let _core_cipher = zz_core::storage::Cipher::new(&key)
             .map_err(|_| anyhow::anyhow!("core cipher initialization failed"))?;
         Ok(identity)
     }
 }
 fn serve(identity: Identity, domain: BindingDomain, port: u16, native: bool) -> Result<()> {
-    let mut acceptor = SslAcceptor::mozilla_intermediate(SslMethod::tls_server())?;
+    identity.validate_wallet()?;
+    let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())?;
     acceptor.set_min_proto_version(Some(SslVersion::TLS1_3))?;
     acceptor.set_certificate(identity.certificate()?.as_ref())?;
     acceptor.set_private_key(identity.tls_key()?.as_ref())?;

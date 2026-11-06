@@ -8,14 +8,14 @@ import json
 runtime=json.load(open('enclave/config/runtime.json'))
 for key in ('registry','bridge'):
     value=runtime['domain'][key]
-    assert len(bytes.fromhex(value.removeprefix('0x')))==20 and int(value,16)>0, f'configure {key}'
-assert ':000000000000:' not in runtime['kms']['key_arn'] and 'REPLACE' not in runtime['kms']['key_arn']
-assert json.load(open('enclave/config/sidecar.json'))['ethereum_rpc'].startswith('https://')
+    if len(bytes.fromhex(value.removeprefix('0x')))!=20 or int(value,16)==0: raise SystemExit(f'configure {key}')
+if ':000000000000:' in runtime['kms']['key_arn'] or 'REPLACE' in runtime['kms']['key_arn']: raise SystemExit('configure KMS key ARN')
+if not json.load(open('enclave/config/sidecar.json'))['ethereum_rpc'].startswith('https://'): raise SystemExit('HTTPS RPC required')
 PY
 mkdir -p artifacts/nitro
 cwxmr_epoch="$(git show -s --format=%ct HEAD)"
 cwxmr_tag="${1:-cwxmr-nitro:local}"
-docker build --platform linux/amd64 --build-arg "SOURCE_DATE_EPOCH=$cwxmr_epoch" -f enclave/Dockerfile -t "$cwxmr_tag" .
+docker build --no-cache --platform linux/amd64 --build-arg "SOURCE_DATE_EPOCH=$cwxmr_epoch" -f enclave/Dockerfile -t "$cwxmr_tag" .
 nitro-cli build-enclave --docker-uri "$cwxmr_tag" --output-file artifacts/nitro/cwxmr.eif > artifacts/nitro/build.json
 nitro-cli describe-eif --eif-path artifacts/nitro/cwxmr.eif > artifacts/nitro/describe.json
 python3 scripts/nitro/measurements.py artifacts/nitro/describe.json > artifacts/nitro/measurements.json

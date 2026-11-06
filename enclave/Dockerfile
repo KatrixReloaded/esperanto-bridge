@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # Registry manifest digests resolved 2026-11-06. Always build linux/amd64 on Linux.
 FROM rust:1.96.0-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS rust-build
 ARG SOURCE_DATE_EPOCH
