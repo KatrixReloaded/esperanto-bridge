@@ -8,7 +8,7 @@ use monero_wallet::{
         PublishTransaction,
     },
     transaction::{Timelock, Transaction},
-    Scanner,
+    Scanner, WalletOutput,
 };
 use reqwest::{Client, Proxy, Url};
 use std::{collections::HashSet, time::Duration};
@@ -50,6 +50,21 @@ fn maturity(
     } else {
         ChainStatus::Pending
     })
+}
+
+/// A duplicate key cannot back multiple deposits. Exclude every occurrence rather than
+/// choosing one, while allowing the trusted canonical scan to advance past the block.
+fn exclude_duplicate_output_keys(mut outputs: Vec<WalletOutput>) -> Vec<WalletOutput> {
+    let mut seen = HashSet::new();
+    let mut duplicates = HashSet::new();
+    for output in &outputs {
+        let key = output.key().compress().to_bytes();
+        if !seen.insert(key) {
+            duplicates.insert(key);
+        }
+    }
+    outputs.retain(|output| !duplicates.contains(&output.key().compress().to_bytes()));
+    outputs
 }
 
 #[derive(Clone)]
@@ -190,13 +205,7 @@ impl TrustedStagenet {
         if self.daemon.block_hash(number).await? != before {
             return Err(unavailable());
         }
-        let mut seen = HashSet::new();
-        if found
-            .iter()
-            .any(|o| !seen.insert(o.key().compress().to_bytes()))
-        {
-            return Err(unavailable());
-        }
+        let found = exclude_duplicate_output_keys(found);
         let evidence = ChainEvidence {
             height,
             block_hash: Id(before),
@@ -310,6 +319,60 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+
+    #[test]
+    fn duplicate_fixture_keys_exclude_all_occurrences_and_retain_other_outputs() {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
+        use monero_wallet::{
+            block::Block,
+            ed25519::{Point, Scalar},
+            interface::ScannableBlock,
+            transaction::Pruned,
+            ViewPair,
+        };
+        use zeroize::Zeroizing;
+        // Public upstream monero-wallet scan fixture, also used in tests/wallet_fixture.rs.
+        let scalar = |hex: &str| Scalar::read(&mut hex::decode(hex).unwrap().as_slice()).unwrap();
+        let spend = scalar("ccf0ea10e1ea64354f42fa710c2b318e581969cf49046d809d1f0aadb3fc7a02");
+        let view = Zeroizing::new(scalar(
+            "a28b4b2085592881df94ee95da332c16b5bb773eb8bb74730208cbb236c73806",
+        ));
+        let pair =
+            ViewPair::new(Point::from(ED25519_BASEPOINT_POINT * spend.into()), view).unwrap();
+        let block = Block::read(
+            &mut hex::decode(include_str!("../tests/fixtures/block.hex").trim())
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        let transaction = Transaction::<Pruned>::read(
+            &mut hex::decode(include_str!("../tests/fixtures/tx.hex").trim())
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        let outputs = Scanner::new(pair)
+            .scan(ScannableBlock {
+                block,
+                transactions: vec![transaction],
+                output_index_for_first_ringct_output: Some(0),
+            })
+            .unwrap()
+            .ignore_additional_timelock();
+        assert_eq!(outputs.len(), 2);
+        let clean = exclude_duplicate_output_keys(outputs.clone());
+        assert_eq!(clean.len(), 2);
+        let filtered = exclude_duplicate_output_keys(vec![
+            outputs[0].clone(),
+            outputs[1].clone(),
+            outputs[0].clone(),
+        ]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].serialize(), outputs[1].serialize());
+        assert!(
+            exclude_duplicate_output_keys(vec![outputs[0].clone(), outputs[0].clone()]).is_empty()
+        );
+    }
 
     #[test]
     fn trusted_maturity_enforces_depth_and_additional_locks() {
