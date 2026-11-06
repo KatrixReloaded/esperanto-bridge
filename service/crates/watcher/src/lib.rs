@@ -4,4 +4,6 @@ pub mod attestation;
 pub mod backup;
 pub mod deposits;
 pub mod kms;
+pub mod mints;
 pub mod observation;
+pub mod prover;

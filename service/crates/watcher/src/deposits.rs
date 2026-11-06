@@ -34,6 +34,29 @@ impl std::fmt::Display for ChainUnavailable {
 impl std::error::Error for ChainUnavailable {}
 
 impl Deposits {
+    /// Public identifiers only, with unresolved submitted transactions first. A quarantined
+    /// unfinished mint blocks new authorizations until an operator reconciles the journal.
+    pub fn pending_mints(&mut self) -> Result<Vec<(Id, bool)>> {
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        ensure!(
+            !state
+                .deposits
+                .iter()
+                .any(|d| d.quarantined && !matches!(d.state, MintState::Confirmed { .. })),
+            "quarantined mint requires reconciliation"
+        );
+        let mut pending: Vec<_> = state
+            .deposits
+            .iter()
+            .filter(|d| !d.quarantined && !matches!(d.state, MintState::Confirmed { .. }))
+            .map(|d| (d.id, matches!(d.state, MintState::Submitted { .. })))
+            .collect();
+        pending.sort_by_key(|(_, submitted)| !submitted);
+        Ok(pending)
+    }
     /// Reconcile only the exact finalized mint receipt and its scoped decrypted actual amount.
     /// Nothing is credited from an RPC acknowledgement, unfinalized receipt or requested amount.
     pub async fn reconcile_mint(
