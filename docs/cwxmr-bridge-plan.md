@@ -1,6 +1,6 @@
 # cwXMR: Private-to-Private Monero ↔ Ethereum Bridge
 
-Status: architecture and implementation plan; no implementation or deployment claimed.
+Status: target architecture with a locally tested implementation foundation; see implementation-status.md for delivered components and remaining gates. No deployment or end-to-end bridge completion claimed.
 Date: 2026-11-06.
 
 ## 1. Objective and agreed design
@@ -45,7 +45,7 @@ ERC-7984 defines a confidential-token interface, not a complete bridge, anonymit
 2. **Bridge:** deposit replay protection, mint authorization, redemption creation, eligibility snapshots, assignment, and settlement records.
 3. **cwXMR:** confidential balances, supply accounting, minting, and burning using Zama's Solidity FHE library.
 4. **Automata Nitro verifier:** verifies proofs of AWS Nitro attestation documents through the configured deployed verifier contract.
-5. **Zama infrastructure:** confidential computation and permissioned decryption.
+5. **Zama infrastructure:** confidential computation, permissioned amount/destination decryption, and the public positivity proof used for claiming.
 
 Recommended contract structure: cwXMR gives its mint role only to Bridge. Bridge accepts mint authorizations only from currently authorized, Automata-verified enclave keys. Thus every active vault can initiate minting, while every mint passes through one consistent authorization and replay check. There is no alternate administrator or operator mint path in the planned production interface.
 
@@ -93,7 +93,7 @@ Bridge verifies:
 
 The contract consumes the identifier and performs the mint atomically. Any relayer may submit the authorization; its Ethereum account does not receive mint authority.
 
-Re-attestation is required before the configured authorization expires. Expiry blocks new actions under the defined policy. Draining vaults need an explicit, limited path for processing previously issued deposit addresses and pending work; they do not retain general mint authority indefinitely.
+Re-attestation is required before the configured authorization expires. Expiry blocks new actions under the defined policy. Draining vaults need an explicit, limited path for processing previously issued deposit addresses and pending work; they do not retain general mint authority indefinitely. The current contracts prohibit all minting while draining and permit authorized settlement only. Late-deposit handling therefore remains a deployment gate; do not enable draining with unresolved deposit obligations.
 
 The same approved PCR tuple does not demonstrate independent ownership or prevent one operator from running many instances. Admission limits and economic protections are separate decisions. No particular centralized operator approval process is assumed by this plan.
 
@@ -134,9 +134,9 @@ The Monero verification approach is an implementation gate: specify whether vali
 
 The user submits an encrypted amount, required input proofs, encrypted Monero destination, and accepted fee terms. Bridge burns cwXMR and records the actual burned amount as the source of redemption entitlement.
 
-Do not create entitlement from a user-supplied amount independently of the burn. Failed, insufficient-balance, or zero-result confidential operations must not produce a positive claimable redemption.
+Do not create entitlement from a user-supplied amount independently of the burn. Failed, insufficient-balance, or zero-result confidential operations must not produce a positive claimable redemption. The initial contract implementation publicly decrypts only an encrypted actual-burn-is-positive boolean and requires a Zama decryption-signature proof of true at claim time. This reveals positivity, not the amount; AWS KMS recovery is unrelated to this Zama proof.
 
-For the MVP, capture a bounded snapshot of eligible active vaults at request creation and grant those enclave identities access to both amount and destination. This follows the agreed “decrypt, validate, then compete” design. It avoids assigning a vault before it can discover an invalid destination.
+For the MVP, capture a user-selected, sorted unique subset of 1–16 eligible active vaults at request creation and grant those enclave identities access to both amount and destination. This follows the agreed “decrypt, validate, then compete” design. It avoids assigning a vault before it can discover an invalid destination.
 
 Zama ACL permissions are granted in the contract; decryption happens offchain. The authorization key and final recipient decryption key must both be enclave-controlled. The contract also needs the appropriate permissions for ciphertexts it retains and operates on. [Zama user decryption](https://docs.zama.org/protocol/examples/basic/decryption/fhe-user-decrypt-single-value)
 

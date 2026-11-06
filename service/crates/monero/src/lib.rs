@@ -143,6 +143,7 @@ pub fn allocate_intent(
 }
 
 pub mod chain;
+pub mod destination;
 
 /// Construct and sign offline from already selected and durably reserved outputs and verified
 /// decoys. This function does not establish that these prerequisites hold. The caller must also
