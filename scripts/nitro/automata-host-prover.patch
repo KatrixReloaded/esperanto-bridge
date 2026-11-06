@@ -1,0 +1,33 @@
+diff --git a/crates/nitro-attest-cli/src/prove.rs b/crates/nitro-attest-cli/src/prove.rs
+index 57afe33..42fda26 100644
+--- a/crates/nitro-attest-cli/src/prove.rs
++++ b/crates/nitro-attest-cli/src/prove.rs
+@@ -51,7 +51,12 @@ impl ProveCli {
+     /// 5. Generates proofs (single or aggregated)
+     /// 6. Outputs results to file and/or stdout
+     pub fn run(&self) -> anyhow::Result<()> {
+-        set_prover_dev_mode(self.prover.dev);
++        if self.prover.dev {
++            return Err(anyhow!("cwXMR driver forbids development proofs"));
++        }
++        set_prover_dev_mode(false);
++        // Override the upstream network default before any lazy SP1 prover initialization.
++        std::env::set_var("SP1_PROVER", &self.prover.prover);
+         if self.report.len() == 0 {
+             return Err(anyhow!(
+                 "No report files provided. Use --report to specify the report files."
+diff --git a/crates/nitro-attest-cli/src/utils.rs b/crates/nitro-attest-cli/src/utils.rs
+index 0bac8ee..2234dd1 100644
+--- a/crates/nitro-attest-cli/src/utils.rs
++++ b/crates/nitro-attest-cli/src/utils.rs
+@@ -26,6 +26,10 @@ pub enum BoundlessProofTypeCli {
+ /// Only one prover type should be specified at a time.
+ #[derive(Args, Clone)]
+ pub struct ProverArgs {
++    /// cwXMR host-only selection; does not rebuild or modify guest ELFs.
++    #[arg(long, default_value = "cpu", value_parser = ["cpu", "network"])]
++    pub prover: String,
++
+     #[cfg(feature = "risc0")]
+     /// Use the RISC0 zkVM for proof generation
+     #[arg(long)]
