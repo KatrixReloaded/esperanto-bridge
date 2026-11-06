@@ -127,7 +127,7 @@ impl Deposits {
             zz_zama::Bridge::mintedAmountsCall::abi_decode_returns_validate(&stored)? == handle,
             "mint amount handle mismatch"
         );
-        let kms = alloy::primitives::address!("5D8BD78e2ea6bbE41f26dFe9fdaEAa349e077478");
+        let kms = zz_zama::SEPOLIA_KMS_VERIFIER;
         let context = evm
             .call(
                 kms,
@@ -860,6 +860,36 @@ fn mint_event_handle(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_kms_context_target_is_distinct_from_gateway_permit_domain() {
+        use alloy::{
+            primitives::{address, Address, Bytes, U256},
+            sol_types::SolCall,
+        };
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../zama/src/permit-v1.json")).unwrap();
+        let gateway: Address = fixture["typedData"]["domain"]["verifyingContract"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            gateway,
+            address!("5D8BD78e2ea6bbE41f26dFe9fdaEAa349e077478")
+        );
+        assert_eq!(
+            zz_zama::SEPOLIA_KMS_VERIFIER,
+            address!("bE0E383937d564D7FF0BC3b46c51f0bF8d5C311A")
+        );
+        assert_ne!(zz_zama::SEPOLIA_KMS_VERIFIER, gateway);
+        let encoded: Bytes = fixture["context"].as_str().unwrap().parse().unwrap();
+        let context =
+            super::getCurrentKmsContextIdCall::abi_decode_returns_validate(&encoded).unwrap();
+        assert_eq!(context, U256::from_be_slice(&encoded));
+        assert!(context > U256::from(u64::MAX));
+        // The gateway's observed empty eth_call result must not become a zero/default context.
+        assert!(super::getCurrentKmsContextIdCall::abi_decode_returns_validate(&[]).is_err());
+    }
     use super::*;
     use zz_core::storage::{Cipher, DataKeySource};
     #[test]

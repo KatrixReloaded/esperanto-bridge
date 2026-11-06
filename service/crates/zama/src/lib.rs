@@ -1,6 +1,11 @@
 //! Confidential inputs and enclave-local Zama SDK integration.
 use zz_core::AtomicAmount;
 
+/// Host-chain KMS context getter target from the pinned Sepolia SDK/solidity configuration.
+/// This is distinct from the gateway Decryption EIP-712 verifying contract used by permits.
+pub const SEPOLIA_KMS_VERIFIER: alloy::primitives::Address =
+    alloy::primitives::address!("bE0E383937d564D7FF0BC3b46c51f0bF8d5C311A");
+
 pub mod evm;
 pub mod fhe;
 pub mod mint;

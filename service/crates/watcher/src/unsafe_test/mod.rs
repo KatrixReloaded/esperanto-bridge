@@ -203,7 +203,9 @@ pub fn main() -> Result<()> {
         ensure!(args.len() == 3, "unexpected arguments");
         return initialize(Path::new(&args[2]));
     }
+    eprintln!("UNSAFE TEST startup: configuration");
     let config = read_config(Path::new(&args[2]))?;
+    eprintln!("UNSAFE TEST startup: local_identity_bundle");
     let bundle = load_bundle(Path::new(&config.bundle))?;
     match args[1].as_str() {
         "init-db" => {
@@ -239,25 +241,31 @@ pub fn main() -> Result<()> {
 fn run(config: Config, bundle: Bundle) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let evm = evm::Client::new("http://127.0.0.1:8788")?;
+    eprintln!("UNSAFE TEST startup: trusted_stagenet_connection");
     let chain = rt
         .block_on(TrustedStagenet::connect(&config.monero_rpc_url))
         .map_err(|_| anyhow::anyhow!("verified stagenet unavailable"))?;
     let binding = config.binding();
     let d = domain(&config, &bundle)?;
+    eprintln!("UNSAFE TEST startup: encrypted_deposit_store");
     let deposits = Arc::new(Mutex::new(Deposits::open(
         store(&config, &bundle)?,
         &bundle.identity,
         &binding,
     )?));
     alloy::sol! {function getCurrentKmsContextId() view returns(uint256);}
+    eprintln!("UNSAFE TEST startup: deployment_pin_verification");
     let head = rt.block_on(pins::verify(&evm, &config))?;
+    eprintln!("UNSAFE TEST startup: host_kms_context");
     let context = rt
         .block_on(evm.call(
-            alloy::primitives::address!("5D8BD78e2ea6bbE41f26dFe9fdaEAa349e077478"),
+            zz_zama::SEPOLIA_KMS_VERIFIER,
             getCurrentKmsContextIdCall {}.abi_encode().into(),
             head.hash,
         ))?
         .result;
+    let context = getCurrentKmsContextIdCall::abi_decode_returns_validate(&context)?;
+    eprintln!("UNSAFE TEST startup: cooperative_payout_lease");
     let mut redemptions = Redemptions::open(
         store(&config, &bundle)?,
         StagenetPocPolicy::accept_single_operator_single_process_no_rollback(d)?,
@@ -267,7 +275,7 @@ fn run(config: Config, bundle: Bundle) -> Result<()> {
             network_fee_cap: AtomicAmount(config.network_fee_cap_atomic),
             max_fee_per_weight: config.max_fee_per_weight,
             monero_confirmations: config.confirmations,
-            kms_context: getCurrentKmsContextIdCall::abi_decode_returns_validate(&context)?,
+            kms_context: context,
         },
         &bundle.identity,
         &chain,
@@ -318,6 +326,7 @@ fn run(config: Config, bundle: Bundle) -> Result<()> {
             eprintln!("UNSAFE TEST worker stopped; reconcile existing journals before restarting");
         }
     });
+    eprintln!("UNSAFE TEST startup: loopback_api_and_worker");
     serve(port, deposits, health)
 }
 async fn finalized(evm: &evm::Client, hash: Id) -> Result<bool> {
