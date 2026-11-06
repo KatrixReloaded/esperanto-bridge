@@ -9,11 +9,14 @@ default = []
 nitro = ["dep:aws-nitro-enclaves-nsm-api"]
 
 [dependencies]
+alloy = { version = "=1.8.3", features = ["eip712", "k256", "signer-local", "sol-types", "dyn-abi", "json"] }
 anyhow = "1"
 base64 = "0.22"
 hex = "0.4"
 hmac = "0.12"
 openssl = "0.10"
+postgres = "0.19"
+postgres-openssl = "0.5"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -22,13 +25,11 @@ sha2 = "0.10"
 sha3 = "0.10"
 time = { version = "0.3", features = ["formatting"] }
 zeroize = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
 monero-wallet = "=0.2.0"
 zz-monero = { path = "../monero" }
 zz-core = { path = "../core" }
 zz-zama = { path = "../zama" }
-
-[dev-dependencies]
-postgres = "0.19"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aws-nitro-enclaves-nsm-api = { version = "=0.5.2", optional = true }

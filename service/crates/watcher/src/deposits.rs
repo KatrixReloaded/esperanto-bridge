@@ -1,7 +1,9 @@
 //! Enclave-local deposit issuance and scan persistence. No RPC observation directly signs a mint.
 use crate::attestation::{decode, BindingDomain, Identity};
+use alloy::primitives::{keccak256, Address, U256};
 use anyhow::{ensure, Result};
 use monero_wallet::{address::Network, Scanner, ViewPair};
+use serde_json::json;
 use sha3::{Digest, Keccak256};
 use zeroize::Zeroizing;
 use zz_core::{
@@ -10,6 +12,7 @@ use zz_core::{
     ChainEvidence, DepositIntent, Domain, Id,
 };
 use zz_monero::chain::ObservedOutput;
+use zz_monero::{chain::ChainStatus, stagenet::TrustedStagenet};
 
 pub struct Deposits {
     store: PostgresStore,
@@ -18,7 +21,473 @@ pub struct Deposits {
     id_key: Zeroizing<[u8; 32]>,
 }
 
+#[derive(Debug)]
+pub struct ChainUnavailable;
+impl std::fmt::Display for ChainUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("trusted chain unavailable")
+    }
+}
+impl std::error::Error for ChainUnavailable {}
+
 impl Deposits {
+    /// Validate the prover's calldata against the durable authorization, then persist the exact
+    /// signed envelope before handing it to any network transport. No transaction is sent here.
+    pub async fn journal_mint_transaction(
+        &mut self,
+        identity: &Identity,
+        chain: &TrustedStagenet,
+        evm: &zz_zama::evm::Client,
+        id: Id,
+        confirmations: u64,
+        calldata: Vec<u8>,
+        fees: zz_zama::transaction::Fees,
+    ) -> Result<zz_zama::evm::SignedTransaction> {
+        ensure!(
+            self.eligible(chain, id, confirmations).await?.is_some(),
+            "deposit not eligible"
+        );
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        if let Some(operation) = state
+            .evm_operations
+            .iter()
+            .find(|op| op.operation_id == id && op.domain == self.domain)
+        {
+            return zz_zama::evm::SignedTransaction::restore(
+                operation.signed_bytes.clone().into(),
+                operation.tx_hash.0.into(),
+            );
+        }
+        let deposit = state
+            .deposits
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| anyhow::anyhow!("unknown deposit"))?;
+        let intent = state
+            .intents
+            .iter()
+            .find(|i| i.id == deposit.intent_id && i.domain == self.domain)
+            .ok_or_else(|| anyhow::anyhow!("intent domain mismatch"))?;
+        let MintState::Authorized(authorization) = &deposit.state else {
+            anyhow::bail!("deposit not authorized");
+        };
+        let signer = identity.mint_signer()?;
+        let sender = signer.address();
+        // Treat operator/prover output as untrusted. Simulate the exact complete call through
+        // the enclave's Nym transport, including the actual FHE input sender, before signing gas.
+        let head: zz_zama::evm::BlockObservation = evm
+            .read(
+                zz_zama::evm::ReadMethod::BlockByNumber,
+                json!(["latest", false]),
+            )
+            .await?
+            .result;
+        ensure!(
+            head.timestamp <= authorization.deadline,
+            "mint authorization expired"
+        );
+        let _: zz_zama::evm::Observation<String> = evm.read(zz_zama::evm::ReadMethod::Call,
+            json!([{"from":sender,"to":Address::from(self.domain.bridge),"data":format!("0x{}",hex::encode(&calldata))},
+                {"blockHash":head.hash,"requireCanonical":true}])).await?;
+        let nonce: String = evm
+            .read(
+                zz_zama::evm::ReadMethod::TransactionCount,
+                json!([sender, "pending"]),
+            )
+            .await?
+            .result;
+        let nonce = u64::from_str_radix(
+            nonce
+                .strip_prefix("0x")
+                .ok_or_else(|| anyhow::anyhow!("invalid nonce"))?,
+            16,
+        )?;
+        let request = zz_zama::mint::Mint {
+            vaultId: self.domain.vault.0.into(),
+            depositId: id.0.into(),
+            recipient: intent.recipient.into(),
+            amountHandle: authorization.amount_handle.0.into(),
+            inputProofHash: keccak256(&authorization.input_proof),
+            nonce: U256::from(authorization.nonce),
+            deadline: authorization.deadline,
+        };
+        let transaction = zz_zama::transaction::sign_mint_transaction(
+            &signer,
+            &self.domain,
+            &request,
+            &authorization.input_proof,
+            &authorization.signature,
+            calldata.into(),
+            nonce,
+            fees,
+        )?;
+        let operation = zz_core::EvmOperation {
+            domain: self.domain.clone(),
+            operation_id: id,
+            signer: sender.into_array(),
+            nonce,
+            signed_bytes: transaction.raw().to_vec(),
+            tx_hash: Id(transaction.hash().0),
+        };
+        self.store
+            .update(self.domain.vault, |state| {
+                state.journal_mint(id, operation)?;
+                Ok(())
+            })
+            .map_err(|_| anyhow::anyhow!("signed mint persistence failed"))?;
+        Ok(transaction)
+    }
+
+    /// An explicit retry can only send the original journaled bytes, after a fresh source check.
+    /// Ambiguous outcomes stay Submitted; absence of a receipt never permits a replacement.
+    pub async fn submit_mint(
+        &mut self,
+        chain: &TrustedStagenet,
+        evm: &zz_zama::evm::Client,
+        id: Id,
+        confirmations: u64,
+    ) -> Result<zz_zama::evm::SubmissionOutcome> {
+        ensure!(
+            self.eligible(chain, id, confirmations).await?.is_some(),
+            "deposit not eligible"
+        );
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        let deposit = state
+            .deposits
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| anyhow::anyhow!("unknown deposit"))?;
+        let MintState::Submitted {
+            transaction: expected,
+            ..
+        } = deposit.state
+        else {
+            anyhow::bail!("mint not pending");
+        };
+        let operation = state
+            .evm_operations
+            .iter()
+            .find(|op| op.domain == self.domain && op.operation_id == id && op.tx_hash == expected)
+            .ok_or_else(|| anyhow::anyhow!("signed transaction missing"))?;
+        let signed = zz_zama::evm::SignedTransaction::restore(
+            operation.signed_bytes.clone().into(),
+            expected.0.into(),
+        )?;
+        Ok(evm.submit_journaled(&signed).await)
+    }
+    pub fn get(&mut self, intent_id: Id) -> Result<serde_json::Value> {
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        let intent = state
+            .intents
+            .iter()
+            .find(|i| i.id == intent_id && i.domain == self.domain)
+            .ok_or_else(|| anyhow::anyhow!("unknown intent"))?;
+        let deposits = state
+            .deposits
+            .iter()
+            .filter(|d| d.intent_id == intent_id)
+            .collect::<Vec<_>>();
+        let status = if deposits.iter().any(|d| d.quarantined) {
+            "quarantined"
+        } else if deposits
+            .iter()
+            .any(|d| matches!(d.state, MintState::Submitted { .. }))
+        {
+            "minting"
+        } else if deposits
+            .iter()
+            .any(|d| matches!(d.state, MintState::Authorized(_)))
+        {
+            "proving"
+        } else if deposits
+            .iter()
+            .any(|d| matches!(d.state, MintState::Observed))
+        {
+            "confirming"
+        } else if deposits.iter().any(|d| {
+            matches!(
+                d.state,
+                MintState::Confirmed {
+                    actual: zz_core::AtomicAmount(0),
+                    ..
+                }
+            )
+        }) {
+            "failed"
+        } else if deposits.is_empty() {
+            "awaiting_deposit"
+        } else {
+            "minted"
+        };
+        Ok(json!({"intentId":format!("0x{}",hex::encode(intent.id.0)),
+            "vaultId":format!("0x{}",hex::encode(intent.domain.vault.0)),
+            "recipient":format!("0x{}",hex::encode(intent.recipient)),
+            "depositAddress":intent.subaddress,"network":"stagenet","status":status}))
+    }
+    /// Prepare a real request-bound NSM document only after a fresh trusted-node maturity check.
+    /// The returned data is public proof material; wallet keys and plaintext amount stay internal.
+    /// No native-development attestation substitute exists. This is not a public signing endpoint.
+    pub async fn prepare_mint(
+        &mut self,
+        identity: &Identity,
+        binding: &BindingDomain,
+        chain: &TrustedStagenet,
+        fhe: &zz_zama::fhe::Client,
+        evm: &zz_zama::evm::Client,
+        id: Id,
+        confirmations: u64,
+        lifetime: u64,
+    ) -> Result<Option<(serde_json::Value, Vec<u8>)>> {
+        ensure!(
+            lifetime > 0 && lifetime <= 600,
+            "mint lifetime exceeds attestation policy"
+        );
+        let public = identity.public()?;
+        ensure!(
+            binding.chain_id == self.domain.chain_id
+                && decode::<20>(&binding.bridge)? == self.domain.bridge
+                && decode::<32>(&public.vault_id)? == self.domain.vault.0,
+            "mint domain mismatch"
+        );
+        let Some(deposit) = self.eligible(chain, id, confirmations).await? else {
+            return Ok(None);
+        };
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        let intent = state
+            .intents
+            .iter()
+            .find(|i| i.id == deposit.intent_id && i.domain == self.domain)
+            .ok_or_else(|| anyhow::anyhow!("intent missing"))?;
+        let authorization = match deposit.state {
+            MintState::Observed => {
+                let nonce = state
+                    .deposits
+                    .iter()
+                    .filter_map(|d| match &d.state {
+                        MintState::Authorized(a)
+                        | MintState::Submitted {
+                            authorization: a, ..
+                        }
+                        | MintState::Confirmed {
+                            authorization: a, ..
+                        } => Some(a.nonce),
+                        _ => None,
+                    })
+                    .max()
+                    .map(|n| n.checked_add(1))
+                    .unwrap_or(Some(0))
+                    .ok_or_else(|| anyhow::anyhow!("nonce overflow"))?;
+                let encrypted = fhe
+                    .encrypt(
+                        Address::from(self.domain.bridge),
+                        Address::from(decode::<20>(&public.signing_key)?),
+                        deposit.amount.0,
+                    )
+                    .await?;
+                let clock: zz_zama::evm::BlockObservation = evm
+                    .read(
+                        zz_zama::evm::ReadMethod::BlockByNumber,
+                        json!(["latest", false]),
+                    )
+                    .await?
+                    .result;
+                let deadline = clock
+                    .timestamp
+                    .checked_add(lifetime)
+                    .ok_or_else(|| anyhow::anyhow!("deadline overflow"))?;
+                let signature = zz_zama::mint::sign_mint(
+                    &identity.mint_signer()?,
+                    &self.domain,
+                    id,
+                    intent.recipient,
+                    encrypted.handle.0,
+                    &encrypted.input_proof,
+                    nonce,
+                    deadline,
+                )
+                .map_err(anyhow::Error::msg)?;
+                let a = zz_core::deposits::MintAuthorization {
+                    amount_handle: Id(encrypted.handle.0),
+                    input_proof: encrypted.input_proof.to_vec(),
+                    nonce,
+                    deadline,
+                    signature,
+                };
+                self.store
+                    .update(self.domain.vault, |state| {
+                        state.authorize_mint(id, a.clone())?;
+                        Ok(())
+                    })
+                    .map_err(|_| anyhow::anyhow!("mint authorization persistence failed"))?;
+                a
+            }
+            MintState::Authorized(a) => a,
+            _ => anyhow::bail!("mint already journaled or confirmed"),
+        };
+        let request = zz_zama::mint::Mint {
+            vaultId: self.domain.vault.0.into(),
+            depositId: id.0.into(),
+            recipient: intent.recipient.into(),
+            amountHandle: authorization.amount_handle.0.into(),
+            inputProofHash: keccak256(&authorization.input_proof),
+            nonce: U256::from(authorization.nonce),
+            deadline: authorization.deadline,
+        };
+        // Encryption can take time. Check the source again before releasing the attestation.
+        ensure!(
+            self.eligible(chain, id, confirmations).await?.is_some(),
+            "deposit is no longer eligible"
+        );
+        let clock: zz_zama::evm::BlockObservation = evm
+            .read(
+                zz_zama::evm::ReadMethod::BlockByNumber,
+                json!(["latest", false]),
+            )
+            .await?
+            .result;
+        ensure!(
+            clock.timestamp <= authorization.deadline,
+            "authorization expired; reconciliation required"
+        );
+        let document = identity.attest_mint(binding, &request, &authorization.signature)?;
+        let hex = |bytes: &[u8]| format!("0x{}", hex::encode(bytes));
+        Ok(Some((
+            json!({
+                "schema":"cwxmr-mint-proof-request-v1",
+                "domain":{"name":"CWXMRBridge","version":"1","chainId":binding.chain_id,"verifyingContract":hex(&self.domain.bridge)},
+                "registry":hex(&decode::<20>(&binding.registry)?),
+                "authorization":{"vaultId":hex(&self.domain.vault.0),"depositId":hex(&id.0),"recipient":hex(&intent.recipient),
+                    "amountHandle":hex(&authorization.amount_handle.0),"inputProofHash":hex(keccak256(&authorization.input_proof).as_slice()),
+                    "nonce":authorization.nonce.to_string(),"deadline":authorization.deadline.to_string()},
+                "keys":{"decryptKey":hex(&decode::<20>(&public.decrypt_key)?),"tlsKeyHash":hex(&decode::<32>(&public.tls_key_hash)?),
+                    "authKeyHash":hex(&decode::<32>(&public.auth_key_hash)?)},
+                "policyVersion":binding.policy_version.to_string(),"publicKey":hex(&decode::<64>(&public.public_key)?),
+                "inputProof":hex(&authorization.input_proof),"signature":hex(&authorization.signature)
+            }),
+            document,
+        )))
+    }
+    /// Scan one block per iteration so the supervisor can apply backpressure and stop promptly.
+    /// The caller supplies the wallet birth height; persisted cursors always take precedence.
+    pub async fn sync_once(&mut self, chain: &TrustedStagenet, birth_height: u64) -> Result<bool> {
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        let next = if let Some(cursor) = &state.monero_cursor {
+            if chain
+                .block_hash(cursor.height)
+                .await
+                .map_err(|_| ChainUnavailable)?
+                != cursor.block_hash
+            {
+                self.store
+                    .update(self.domain.vault, |state| {
+                        for deposit in &mut state.deposits {
+                            deposit.quarantined = true;
+                        }
+                        Ok(())
+                    })
+                    .map_err(|_| anyhow::anyhow!("quarantine persistence failed"))?;
+                anyhow::bail!("scan anchor reorganized; manual reconciliation required");
+            }
+            cursor
+                .height
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("height overflow"))?
+        } else {
+            birth_height
+        };
+        let tip = chain.tip().await.map_err(|_| ChainUnavailable)?;
+        if next > tip.height {
+            return Ok(false);
+        }
+        let mut scanner = self.scanner()?;
+        let block = chain
+            .scan_height(&mut scanner, next)
+            .await
+            .map_err(|_| ChainUnavailable)?;
+        self.observe_block(block.block, block.parent, &block.outputs)?;
+        Ok(true)
+    }
+
+    /// Recheck the saved scanner output against the explicitly trusted stagenet node. No secret
+    /// metadata leaves the enclave. Reorgs permanently quarantine the deposit pending review.
+    pub async fn eligible(
+        &mut self,
+        chain: &TrustedStagenet,
+        id: Id,
+        confirmations: u64,
+    ) -> Result<Option<Deposit>> {
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        let deposit = state
+            .deposits
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| anyhow::anyhow!("unknown deposit"))?;
+        ensure!(!deposit.quarantined, "deposit quarantined");
+        let intent = state
+            .intents
+            .iter()
+            .find(|i| i.id == deposit.intent_id && i.domain == self.domain)
+            .ok_or_else(|| anyhow::anyhow!("deposit domain mismatch"))?;
+        let mut bytes = deposit.wallet_output.as_slice();
+        let output = monero_wallet::WalletOutput::read(&mut bytes)?;
+        ensure!(
+            bytes.is_empty()
+                && zz_monero::input_id(&output) == deposit.output_key
+                && output.transaction() == deposit.transaction.0
+                && output.index_in_transaction() == deposit.output_index
+                && zz_monero::observed_amount(&output) == deposit.amount
+                && output.subaddress().is_some_and(
+                    |index| index.account() == 0 && index.address() == intent.subaddress_index
+                )
+                && zz_monero::deposit_id(
+                    &self.id_key,
+                    &self.domain,
+                    output.transaction(),
+                    output.index_in_transaction()
+                ) == id,
+            "saved output mismatch"
+        );
+        let observed = ObservedOutput {
+            output,
+            block: deposit.inclusion.clone(),
+            coinbase: false,
+        };
+        match chain
+            .status(&observed, confirmations)
+            .await
+            .map_err(|_| anyhow::anyhow!("chain status unavailable"))?
+        {
+            ChainStatus::Pending => Ok(None),
+            ChainStatus::Mature => Ok(Some(deposit)),
+            ChainStatus::Reorganized => {
+                self.store
+                    .update(self.domain.vault, |state| {
+                        state.quarantine_deposit(id)?;
+                        Ok(())
+                    })
+                    .map_err(|_| anyhow::anyhow!("quarantine persistence failed"))?;
+                anyhow::bail!("deposit reorganized");
+            }
+        }
+    }
     /// Existing encrypted state is mandatory. Initialization is a separate operator action.
     pub fn open(
         mut store: PostgresStore,
@@ -35,9 +504,14 @@ impl Deposits {
             vault: Id(decode(&identity.public()?.vault_id)?),
         };
         ensure!(domain.bridge != [0; 20], "bridge required");
-        store
+        let state = store
             .load(domain.vault)
             .map_err(|_| anyhow::anyhow!("encrypted vault state unavailable"))?;
+        ensure!(
+            state.intents.iter().all(|i| i.domain == domain)
+                && state.evm_operations.iter().all(|op| op.domain == domain),
+            "stored deployment domain mismatch"
+        );
         Ok(Self {
             store,
             domain,
@@ -83,6 +557,7 @@ impl Deposits {
         let indices = state
             .intents
             .iter()
+            .filter(|i| i.domain == self.domain)
             .map(|i| i.subaddress_index)
             .collect::<Vec<_>>();
         zz_monero::scanner(self.pair.clone(), &indices).map_err(anyhow::Error::msg)
@@ -133,6 +608,15 @@ impl Deposits {
                         continue;
                     };
                     let output = &observed.output;
+                    // A duplicate output key can never create additional backing. Ignore it
+                    // without rolling back the block, so an attacker cannot stall wallet sync.
+                    if state
+                        .deposits
+                        .iter()
+                        .any(|d| d.output_key == zz_monero::input_id(output))
+                    {
+                        continue;
+                    }
                     let id = zz_monero::deposit_id(
                         &self.id_key,
                         &self.domain,
@@ -210,5 +694,8 @@ mod tests {
         assert_ne!(first.subaddress, next.subaddress);
         assert_eq!(next.subaddress_index, first.subaddress_index + 1);
         assert!(Deposits::open(store(&url), &Identity::generate().unwrap(), &domain).is_err());
+        let mut other_domain = domain;
+        other_domain.bridge = "33".repeat(20);
+        assert!(Deposits::open(store(&url), &identity, &other_domain).is_err());
     }
 }

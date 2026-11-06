@@ -5,6 +5,7 @@ pub mod evm;
 pub mod fhe;
 pub mod mint;
 pub mod permit;
+pub mod transaction;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ActualResultError {
