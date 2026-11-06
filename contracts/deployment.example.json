@@ -1,0 +1,15 @@
+{
+  "chainId": 11155111,
+  "automataRevision": "65c4a4233029ea3bbe16110a80731fcfd47cf300",
+  "verifier": "0x08e49F31Ab11b17f3a5BaA36e6744E9B532bC87B",
+  "verifierCodeHash": null,
+  "coprocessor": 2,
+  "programId": null,
+  "rootCert": null,
+  "proofSelector": null,
+  "zkVerifier": "0x397A5f7f3dBd538f23DE225B51f532c34448dA9B",
+  "zkVerifierCodeHash": null,
+  "allowMocks": false,
+  "bypassAttestation": false,
+  "devMode": false
+}
