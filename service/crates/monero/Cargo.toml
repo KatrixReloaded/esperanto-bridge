@@ -7,6 +7,10 @@ license.workspace = true
 [dependencies]
 zz-core = { path = "../core" }
 monero-wallet = "=0.2.0"
+monero-daemon-rpc = "=0.2.0"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream"] }
+tokio = { version = "1", features = ["time"] }
+futures-util = "0.3"
 monero-base58 = "=0.1.0"
 curve25519-dalek = { version = "4", features = ["rand_core", "zeroize"] }
 zeroize = "1"
@@ -16,3 +20,4 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]
 hex = "0.4"
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util"] }

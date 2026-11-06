@@ -382,3 +382,5 @@ pub fn journaled_bytes(prepared: &zz_core::PreparedPayout) -> Result<&[u8], &'st
     }
     Ok(&prepared.signed_transaction)
 }
+
+pub mod stagenet;

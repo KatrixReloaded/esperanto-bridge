@@ -14,6 +14,8 @@ COPY enclave/nym/reqwest-proxy.patch /tmp/reqwest-proxy.patch
 RUN cd /src/nym && git apply --unidiff-zero /tmp/reqwest-proxy.patch
 COPY enclave/nym/init-websockets.rs /src/nym/common/client-core/src/init/websockets.rs
 COPY enclave/nym/gateway-websockets.rs /src/nym/common/client-libs/gateway-client/src/client/websockets.rs
+COPY enclave/nym/cwxmr-connect.rs /src/nym/common/client-core/src/init/cwxmr-connect.rs
+COPY enclave/nym/cwxmr-connect.rs /src/nym/common/client-libs/gateway-client/src/client/cwxmr-connect.rs
 WORKDIR /src/nym
 ENV CARGO_INCREMENTAL=0 RUSTFLAGS="--remap-path-prefix=/src=/build"
 RUN cargo build --locked --release -p nym-socks5-client
