@@ -26,12 +26,15 @@ Install and independently verify AWS `nitro-cli 1.5.2` (source revision `1c496ed
 cp enclave/config/runtime.example.json enclave/config/runtime.json
 cp enclave/config/sidecar.example.json enclave/config/sidecar.json
 # Set chain, actual registry/Bridge, policy version, KMS ARN/region and HTTPS RPC.
+# Set the stagenet birth height and TLS-verified local PostgreSQL identity/CA.
 # initialize=true only during a new identity bootstrap; restore uses false.
 scripts/nitro/build.sh
 scripts/nitro/reproduce.sh
 ```
 
 The image pins Rust 1.96.0 and Node24.11.1 manifests by digest, Linux amd64, Debian package snapshot 2026-11-01, Cargo.lock and npm lockfile. It builds the actual four-crate backend and copies the actual SDK. No private `.env`, PEM/key, node_modules or target files enter the Docker context. Two no-cache builds compare EIF hashes and PCR tuples. These scripts have **not** run locally: the current machine is macOS and Docker daemon/Nitro devices are absent. There is no claimed EIF hash/PCR or reproducibility result. Independent matching Linux builds remain required. Changes to public baked config, compiler, SDK, app or bootstrap alter measurements and require policy review.
+
+The measured runtime config contains the public PostgreSQL CA PEM and DNS name, database and restricted role. Configure PostgreSQL on parent loopback port 5432 with TLS and a certificate valid for that name; configure the dedicated local connection role without a baked password. The enclave connects to local port 8446, forwards bytes over vsock and verifies that exact CA and hostname inside the enclave. The parent may corrupt, withhold or replay ciphertext; TLS does not provide rollback protection. Set the stagenet birth height explicitly to the earliest block that must be scanned. A new encrypted vault row is created only when this boot actually creates the identity; a restored identity requires its existing encrypted database state, so back it up alongside the identity envelope. `initialize=true` alone does not recreate a missing restored database.
 
 Build output is under `artifacts/nitro/`: EIF, build/describe JSON, measurements JSON, SHA256 and source/tool/lock/config hashes. `describe-eif` is a local build measurement, not live attestation. Never blindly approve its output. Review the source/config and an independent build before allowing that tuple onchain or in KMS. Zero/missing PCRs fail local checks; onchain registry and KMS must independently reject debug PCRs.
 
@@ -63,7 +66,7 @@ scripts/nitro/launch.sh approved-measurements.json
 nitro-cli describe-enclaves
 ```
 
-Traffic map: parent TCP8443 → enclave vsock8443 → TLS127.0.0.1:8443; enclave local8444 → parent vsock8444 → ciphertext store/IMDS helper; local8445 → parent vsock8445 → regional KMS443; local8888 → parent vsock8888 → allowlisted CONNECT proxy. Outbound wallet/chain adapters are not yet integrated. Inbound parent TCP8443 listens on loopback; any external load balancer must pass TLS bytes unchanged. No host HTTPS termination for sensitive enclave requests.
+Traffic map: parent TCP8443 → enclave vsock8443 → TLS127.0.0.1:8443; enclave local8444 → parent vsock8444 → ciphertext store/IMDS helper; local8445 → parent vsock8445 → regional KMS443; local8446 → parent vsock8446 → PostgreSQL loopback 5432; local8888 → parent vsock8888 → allowlisted CONNECT proxy. Inbound parent TCP8443 listens on loopback; any external load balancer must pass TLS bytes unchanged. No host HTTPS termination for sensitive enclave requests.
 
 A new bootstrap must persist/read back the encrypted envelope before publishing the identity. Once bootstrap succeeds, record its vaultId independently. Set `initialize=false` before any funded release and rebuild/reapprove the resulting measured config; include both approved images in a deliberate KMS migration window if needed. Otherwise a malicious parent returning 404 can trigger a different fresh identity. It cannot recreate the old key or satisfy an existing client's old TLS pin, but it can confuse an unpinned operator. Expected-vault identity fencing is still a release gate.
 

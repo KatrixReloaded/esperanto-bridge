@@ -119,6 +119,7 @@ class LocalTests(unittest.TestCase):
             code = f"""
 import {{ connectPinned }} from {json.dumps((ROOT/'scripts/nitro/verify-peer.mjs').as_uri())};
 import assert from 'node:assert/strict';
+import tls from 'node:tls';
 const health=await connectPinned({json.dumps(endpoint)},{json.dumps(pin)});
 assert.equal(health.native_development,true);assert.equal(health.bridge_actions_enabled,false);
 await assert.rejects(connectPinned({json.dumps(endpoint)},'00'.repeat(32)), /TLS key differs/);
@@ -127,6 +128,17 @@ assert.equal(identity.tls_key_hash,{json.dumps(pin)});
 await assert.rejects(connectPinned({json.dumps(endpoint)},{json.dumps(pin)},'/attestation?nonce='+'00'.repeat(32)),/peer request rejected/);
 await assert.rejects(connectPinned({json.dumps(endpoint)},{json.dumps(pin)},'/attestation?challenge='+'00'.repeat(32)),/peer request rejected/);
 await assert.rejects(connectPinned({json.dumps(endpoint)},{json.dumps(pin)},'/mint-attestation'),/peer request rejected/);
+async function closed(request) {{
+  return await new Promise((resolve,reject) => {{
+    const s=tls.connect({{host:'127.0.0.1',port:{port},rejectUnauthorized:false}},()=>s.write(request));
+    let data=''; s.on('data',x=>data+=x); s.on('end',()=>resolve(data)); s.on('error',reject);
+  }});
+}}
+const payload=JSON.stringify({{recipient:'0x'+'11'.repeat(20),nonce:'0x'+'22'.repeat(32)}});
+for (const request of [
+  `POST /v1/deposit-intents HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Type: application/json\\r\\nContent-Length: ${{Buffer.byteLength(payload)}}\\r\\n\\r\\n${{payload}}`,
+  `GET /v1/deposit-intents/0x${{'33'.repeat(32)}} HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n`
+]) {{ const response=await closed(request); assert.ok(response.startsWith('HTTP/1.1 503')); assert.ok(!response.includes('depositAddress')); }}
 """
             result = subprocess.run([node, "--input-type=module", "-"], input=code, capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stderr)

@@ -10,6 +10,10 @@ for key in ('registry','bridge'):
     value=runtime['domain'][key]
     if len(bytes.fromhex(value.removeprefix('0x')))!=20 or int(value,16)==0: raise SystemExit(f'configure {key}')
 if ':000000000000:' in runtime['kms']['key_arn'] or 'REPLACE' in runtime['kms']['key_arn']: raise SystemExit('configure KMS key ARN')
+database=runtime.get('database', {})
+if not all(isinstance(database.get(k), str) and database[k] and 'REPLACE' not in database[k] for k in ('tls_name','ca_pem','database','user')): raise SystemExit('configure database TLS identity and public CA')
+monero=runtime.get('monero', {})
+if not isinstance(monero.get('rpc_url'),str) or not monero['rpc_url'].startswith('https://') or type(monero.get('birth_height')) is not int or monero['birth_height'] < 0: raise SystemExit('configure stagenet HTTPS node and birth height')
 sidecar=json.load(open('enclave/config/sidecar.json'))
 if not sidecar['ethereum_rpc'].startswith('https://'): raise SystemExit('HTTPS RPC required')
 nym=sidecar.get('nym', {})

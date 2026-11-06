@@ -10,5 +10,15 @@
     "key_arn": "arn:aws:kms:us-east-1:000000000000:key/REPLACE",
     "forward_port": 8445
   },
+  "database": {
+    "tls_name": "postgres.internal",
+    "ca_pem": "REPLACE_WITH_PUBLIC_CA_PEM",
+    "database": "cwxmr",
+    "user": "cwxmr"
+  },
+  "monero": {
+    "rpc_url": "https://xmr.nodely.dev:38089",
+    "birth_height": 0
+  },
   "initialize": false
 }

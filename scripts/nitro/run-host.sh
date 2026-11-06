@@ -12,6 +12,7 @@ trap cleanup EXIT INT TERM
 python3 scripts/nitro/host-store.py --file "$1" & cwxmr_children+=("$!")
 python3 scripts/nitro/forward.py vsock-tcp --listen 8444 --target 8081 & cwxmr_children+=("$!")
 python3 scripts/nitro/forward.py vsock-tcp --listen 8445 --host "kms.$cwxmr_region.amazonaws.com" --target 443 & cwxmr_children+=("$!")
+python3 scripts/nitro/forward.py vsock-tcp --listen 8446 --target 5432 & cwxmr_children+=("$!")
 python3 scripts/nitro/forward.py connect-proxy --listen 8889 --allow "$cwxmr_allow" & cwxmr_children+=("$!")
 python3 scripts/nitro/forward.py vsock-tcp --listen 8888 --target 8889 & cwxmr_children+=("$!")
 # Loopback listener; expose through a raw TCP load balancer only after independent fresh peer authentication.
