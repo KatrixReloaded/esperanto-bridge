@@ -71,6 +71,7 @@ pub trait PayoutJournal {
 }
 
 pub mod deposits;
+pub mod payouts;
 pub mod storage;
 
 impl AtomicAmount {
@@ -95,6 +96,8 @@ pub enum PayoutState {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct VaultState {
+    #[serde(default)]
+    pub poc_attempts: Vec<payouts::PocAttempt>,
     pub intents: Vec<DepositIntent>,
     pub payouts: Vec<PayoutState>,
     pub mint_results: Vec<(Id, AtomicAmount)>,

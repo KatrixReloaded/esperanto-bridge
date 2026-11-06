@@ -171,6 +171,51 @@ impl TrustedStagenet {
         let daemon = checked_daemon(transport).await?;
         Ok(Self { daemon })
     }
+    /// Real daemon-backed decoy selection, with the operator's fee cap. The node is trusted.
+    pub async fn payout_inputs(
+        &self,
+        outputs: Vec<WalletOutput>,
+        max_fee_per_weight: u64,
+    ) -> Result<
+        (
+            Vec<monero_wallet::OutputWithDecoys>,
+            monero_wallet::interface::FeeRate,
+        ),
+        String,
+    > {
+        use monero_wallet::interface::{FeePriority, ProvidesFeeRates};
+        if outputs.is_empty() || outputs.len() > 16 || max_fee_per_weight == 0 {
+            return Err("invalid payout input policy".into());
+        }
+        let tip = self.tip().await.map_err(|_| "daemon unavailable")?;
+        let fee = ProvidesFeeRates::fee_rate(&self.daemon, FeePriority::Normal, max_fee_per_weight)
+            .await
+            .map_err(|_| "fee unavailable or exceeds cap")?;
+        let mut inputs = Vec::new();
+        for output in outputs {
+            inputs.push(
+                monero_wallet::OutputWithDecoys::new(
+                    &mut rand_core::OsRng,
+                    &self.daemon,
+                    16,
+                    usize::try_from(tip.height).map_err(|_| "height overflow")?,
+                    output,
+                )
+                .await
+                .map_err(|_| "decoy selection failed")?,
+            );
+        }
+        if self
+            .block_hash(tip.height)
+            .await
+            .map_err(|_| "daemon unavailable")?
+            != tip.block_hash
+        {
+            return Err("decoy snapshot reorganized".into());
+        }
+        Ok((inputs, fee))
+    }
+
     pub async fn tip(&self) -> Result<ChainEvidence, InterfaceError> {
         let height = self.daemon.latest_block_number().await?;
         let block_hash = Id(self.daemon.block_hash(height).await?);

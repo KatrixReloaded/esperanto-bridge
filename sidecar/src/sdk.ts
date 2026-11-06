@@ -146,6 +146,18 @@ export function createSdk(rpcUrl: string) {
         clearTimeout(timer);
       }
     },
+    async publicBoolean(ciphertext: string) {
+      ready();
+      const h = handle(ciphertext);
+      if (h.slice(62, 64) !== '00' || BigInt('0x' + h.slice(46, 62)) !== 11155111n) throw new SdkError('invalid_handle');
+      try {
+        const result = await sdk.decryption.decryptPublicValues([h], options());
+        const value = result.clearValues[h];
+        const encoded = '0x' + '0'.repeat(63) + (value === true ? '1' : '0');
+        if (typeof value !== 'boolean' || result.abiEncodedClearValues !== encoded || !/^0x(?:[0-9a-fA-F]{2})+$/.test(result.decryptionProof) || result.decryptionProof.length > 262146) throw new Error();
+        return { handle: h, value, abiEncodedClearValues: result.abiEncodedClearValues, decryptionProof: result.decryptionProof };
+      } catch { throw new SdkError('decrypt_failed'); }
+    },
     async encrypt(contract: string, user: string, value: bigint) {
       ready();
       const contractAddress = address(contract);

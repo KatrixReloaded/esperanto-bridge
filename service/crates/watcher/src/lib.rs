@@ -7,3 +7,4 @@ pub mod kms;
 pub mod mints;
 pub mod observation;
 pub mod prover;
+pub mod redemptions;

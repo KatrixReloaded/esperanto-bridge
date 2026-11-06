@@ -113,7 +113,7 @@ export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; 
       if (request.headers.origin !== undefined) fail('origin_forbidden', 403);
       if (request.method !== 'POST') fail('method_not_allowed', 405);
       const evmRoute = ['/evm/read', '/evm/send', '/evm/receipt'].includes(request.url ?? '');
-      if (!['/encrypt', '/encrypt-redemption', '/decrypt-request', '/decrypt'].includes(request.url ?? '') && !(evmRoute && options.evm)) fail('not_found', 404);
+      if (!['/encrypt', '/encrypt-redemption', '/decrypt-request', '/decrypt', '/public-boolean'].includes(request.url ?? '') && !(evmRoute && options.evm)) fail('not_found', 404);
       const bodyLimit = evmRoute ? MAX_EVM_BODY : MAX_BODY;
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers['content-type'] ?? '')) fail('unsupported_media_type', 415);
       const length = request.headers['content-length'];
@@ -132,6 +132,11 @@ export function createServer(sdk: SdkAdapter, options: { sessionTtlMs?: number; 
       try {
         if (evmRoute) {
           send(response, 200, await options.evm!.handle(request.url!, body));
+        } else if (request.url === '/public-boolean') {
+          fields(body, ['handle']);
+          const ciphertext = handle(body.handle);
+          if (ciphertext.slice(62, 64) !== '00' || BigInt('0x' + ciphertext.slice(46, 62)) !== 11155111n) fail('invalid_handle');
+          send(response, 200, await operation('/public-boolean', () => sdk.publicBoolean(ciphertext)));
         } else if (request.url === '/encrypt') {
           fields(body, ['contract', 'user', 'value']);
           const contract = address(body.contract), user = address(body.user);

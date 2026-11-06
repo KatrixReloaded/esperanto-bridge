@@ -214,3 +214,157 @@ mod tests {
         .is_err());
     }
 }
+
+/// Only the two payout calls; no arbitrary target/calldata signer is exposed.
+pub enum PayoutCall {
+    Claim {
+        request: U256,
+        deadline: u64,
+        nonzero_proof: Bytes,
+    },
+    Settle {
+        request: U256,
+        deadline: u64,
+        payment_commitment: zz_core::Id,
+    },
+}
+pub fn sign_payout_transaction(
+    signer: &PrivateKeySigner,
+    domain: &Domain,
+    call: PayoutCall,
+    nonce: u64,
+    fees: Fees,
+) -> Result<SignedTransaction> {
+    let public_key = signer.credential().verifying_key().to_encoded_point(false);
+    ensure!(
+        domain.chain_id == crate::evm::CHAIN_ID
+            && domain.bridge != [0; 20]
+            && keccak256(&public_key.as_bytes()[1..]).0 == domain.vault.0
+            && fees.gas_limit > 0
+            && fees.gas_limit <= 10_000_000
+            && fees.max_fee_per_gas > 0
+            && fees.max_priority_fee_per_gas <= fees.max_fee_per_gas,
+        "invalid payout signing policy"
+    );
+    let calldata = match call {
+        PayoutCall::Claim {
+            request,
+            deadline,
+            nonzero_proof,
+        } => {
+            ensure!(
+                !request.is_zero()
+                    && !nonzero_proof.is_empty()
+                    && nonzero_proof.len() <= 128 * 1024,
+                "invalid claim"
+            );
+            let signature = crate::mint::sign_claim(signer, domain, request, deadline)
+                .map_err(anyhow::Error::msg)?;
+            Bridge::claimCall {
+                id: request,
+                vaultId: domain.vault.0.into(),
+                deadline,
+                signature: signature.into(),
+                nonzeroProof: nonzero_proof,
+            }
+            .abi_encode()
+        }
+        PayoutCall::Settle {
+            request,
+            deadline,
+            payment_commitment,
+        } => {
+            ensure!(!request.is_zero(), "invalid settlement");
+            let signature =
+                crate::mint::sign_settle(signer, domain, request, payment_commitment, deadline)
+                    .map_err(anyhow::Error::msg)?;
+            Bridge::settleCall {
+                id: request,
+                vaultId: domain.vault.0.into(),
+                paymentCommitment: payment_commitment.0.into(),
+                deadline,
+                signature: signature.into(),
+            }
+            .abi_encode()
+        }
+    };
+    let transaction = TxEip1559 {
+        chain_id: domain.chain_id,
+        nonce,
+        gas_limit: fees.gas_limit,
+        max_fee_per_gas: fees.max_fee_per_gas,
+        max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
+        to: TxKind::Call(Address::from(domain.bridge)),
+        value: U256::ZERO,
+        access_list: Default::default(),
+        input: calldata.into(),
+    };
+    let signature = signer.sign_hash_sync(&transaction.signature_hash())?;
+    SignedTransaction::from_signed_bytes(
+        TxEnvelope::Eip1559(transaction.into_signed(signature))
+            .encoded_2718()
+            .into(),
+    )
+}
+
+#[cfg(test)]
+mod payout_tests {
+    use super::*;
+    use alloy::{consensus::Transaction, eips::eip2718::Decodable2718};
+    #[test]
+    fn exact_claim_settle_scope_and_signer_domain() {
+        let signer = PrivateKeySigner::random();
+        let public = signer.credential().verifying_key().to_encoded_point(false);
+        let mut domain = Domain {
+            chain_id: 11155111,
+            bridge: [2; 20],
+            vault: zz_core::Id(keccak256(&public.as_bytes()[1..]).0),
+        };
+        let fees = || Fees {
+            gas_limit: 1_000_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1,
+        };
+        let claim = || PayoutCall::Claim {
+            request: U256::from(4),
+            deadline: 100,
+            nonzero_proof: vec![1, 2].into(),
+        };
+        let signed = sign_payout_transaction(&signer, &domain, claim(), 7, fees()).unwrap();
+        let tx = TxEnvelope::decode_2718_exact(signed.raw()).unwrap();
+        assert_eq!(tx.nonce(), 7);
+        assert_eq!(tx.chain_id(), Some(11155111));
+        assert_eq!(tx.value(), U256::ZERO);
+        let call = Bridge::claimCall::abi_decode_validate(tx.input()).unwrap();
+        assert_eq!(call.id, U256::from(4));
+        assert_eq!(call.vaultId.0, domain.vault.0);
+        assert_eq!(call.nonzeroProof.as_ref(), [1, 2]);
+        assert_eq!(
+            call.signature.to_vec(),
+            crate::mint::sign_claim(&signer, &domain, U256::from(4), 100).unwrap()
+        );
+        let commitment = zz_core::Id([8; 32]);
+        let signed = sign_payout_transaction(
+            &signer,
+            &domain,
+            PayoutCall::Settle {
+                request: U256::from(4),
+                deadline: 200,
+                payment_commitment: commitment,
+            },
+            8,
+            fees(),
+        )
+        .unwrap();
+        let tx = TxEnvelope::decode_2718_exact(signed.raw()).unwrap();
+        let call = Bridge::settleCall::abi_decode_validate(tx.input()).unwrap();
+        assert_eq!(call.paymentCommitment.0, commitment.0);
+        assert_eq!(call.deadline, 200);
+        assert!(
+            sign_payout_transaction(&PrivateKeySigner::random(), &domain, claim(), 9, fees())
+                .is_err()
+        );
+        domain.chain_id = 1;
+        assert!(sign_payout_transaction(&signer, &domain, claim(), 9, fees()).is_err());
+    }
+}

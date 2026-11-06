@@ -19,6 +19,16 @@ pub struct Client {
     base: reqwest::Url,
 }
 
+/// Zama KMS proof; authenticates only after Bridge verifies it during claim. Not AWS KMS.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicBoolean {
+    pub handle: B256,
+    pub value: bool,
+    pub abi_encoded_clear_values: Bytes,
+    pub decryption_proof: Bytes,
+}
+
 pub struct EncryptedInput {
     pub handle: B256,
     pub input_proof: Bytes,
@@ -123,6 +133,30 @@ impl Client {
             .build()
             .map_err(|_| anyhow!("sidecar_client_failed"))?;
         Ok(Self { http, base })
+    }
+
+    pub async fn public_boolean(&self, handle: B256) -> Result<PublicBoolean> {
+        ensure!(
+            !handle.is_zero()
+                && handle[30] == 0
+                && u64::from_be_bytes(handle[22..30].try_into()?) == crate::evm::CHAIN_ID,
+            "invalid_boolean_handle"
+        );
+        #[derive(Serialize)]
+        struct Request {
+            handle: B256,
+        }
+        let response: PublicBoolean = self.post("public-boolean", &Request { handle }).await?;
+        let mut expected = [0u8; 32];
+        expected[31] = u8::from(response.value);
+        ensure!(
+            response.handle == handle
+                && response.abi_encoded_clear_values.as_ref() == expected
+                && !response.decryption_proof.is_empty()
+                && response.decryption_proof.len() <= 128 * 1024,
+            "invalid_public_boolean_proof"
+        );
+        Ok(response)
     }
 
     pub async fn encrypt(

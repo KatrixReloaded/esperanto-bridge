@@ -70,11 +70,53 @@ impl Cipher {
 pub struct PostgresStore {
     client: Client,
     cipher: Cipher,
+    poc_lease: Option<Id>,
 }
 impl PostgresStore {
     /// TLS must terminate inside the enclave; this constructor only accepts an already configured client.
     pub fn new(client: Client, cipher: Cipher) -> Self {
-        Self { client, cipher }
+        Self {
+            client,
+            cipher,
+            poc_lease: None,
+        }
+    }
+    /// Cooperative session lock only, explicitly NOT malicious-clone fencing. A distinct
+    /// two-int key space avoids colliding with ordinary one-int transaction locks.
+    pub fn acquire_stagenet_poc_lease(
+        &mut self,
+        vault: Id,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if self.poc_lease.is_some() {
+            return Err("PoC lease already configured".into());
+        }
+        let namespace = 0x4357584di32;
+        let key = i32::from_be_bytes(vault.0[..4].try_into()?);
+        let locked: bool = self
+            .client
+            .query_one("SELECT pg_try_advisory_lock($1,$2)", &[&namespace, &key])?
+            .get(0);
+        if !locked {
+            return Err("another cooperative payout process holds the lease".into());
+        }
+        self.poc_lease = Some(vault);
+        Ok(())
+    }
+    pub fn check_stagenet_poc_lease(
+        &mut self,
+        vault: Id,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if self.poc_lease != Some(vault) {
+            return Err("PoC lease missing".into());
+        }
+        let namespace = 0x4357584di64;
+        let key = u32::from_be_bytes(vault.0[..4].try_into()?) as i64;
+        let held: bool = self.client.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid() AND classid::bigint=$1 AND objid::bigint=$2 AND objsubid=2 AND granted)", &[&namespace, &key])?.get(0);
+        if !held {
+            self.poc_lease = None;
+            return Err("PoC lease lost".into());
+        }
+        Ok(())
     }
     pub fn migrate(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.client
@@ -129,7 +171,11 @@ impl PostgresStore {
 }
 
 fn validate_domain(vault: Id, state: &VaultState) -> Result<(), Box<dyn Error + Send + Sync>> {
-    if state.intents.iter().any(|i| i.domain.vault != vault)
+    if state
+        .poc_attempts
+        .iter()
+        .any(|a| a.payout.reservation.domain.vault != vault)
+        || state.intents.iter().any(|i| i.domain.vault != vault)
         || state
             .payouts
             .iter()

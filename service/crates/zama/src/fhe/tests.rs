@@ -430,3 +430,60 @@ async fn redemption_encrypt_sends_one_amount_and_three_exact_words() {
     assert_eq!(body["destination"][1], U256::MAX.to_string());
     assert_eq!(body["amount"], "3");
 }
+
+#[tokio::test]
+async fn public_boolean_scope_and_canonical_abi_are_checked() {
+    let mut h = [0xabu8; 32];
+    h[22..30].copy_from_slice(&11155111u64.to_be_bytes());
+    h[30] = 0;
+    h[31] = 0;
+    let handle = B256::from(h);
+    for (value, encoded, proof, returned, ok) in [
+        (
+            true,
+            format!("0x{}1", "0".repeat(63)),
+            "0x1234",
+            handle,
+            true,
+        ),
+        (
+            false,
+            format!("0x{}", "0".repeat(64)),
+            "0x1234",
+            handle,
+            true,
+        ),
+        (
+            true,
+            format!("0x{}", "0".repeat(64)),
+            "0x1234",
+            handle,
+            false,
+        ),
+        (true, format!("0x{}1", "0".repeat(63)), "0x", handle, false),
+        (
+            true,
+            format!("0x{}1", "0".repeat(63)),
+            "0x1234",
+            B256::repeat_byte(1),
+            false,
+        ),
+    ] {
+        let (url,worker)=mock(200,"application/json",json!({"handle":returned,"value":value,"abiEncodedClearValues":encoded,"decryptionProof":proof}).to_string());
+        assert_eq!(
+            Client::new(&url)
+                .unwrap()
+                .public_boolean(handle)
+                .await
+                .is_ok(),
+            ok
+        );
+        assert!(worker.join().unwrap().starts_with("POST /public-boolean"));
+    }
+    h[30] = 5;
+    assert!(Client::new("http://127.0.0.1:1")
+        .unwrap()
+        .public_boolean(h.into())
+        .await
+        .is_err());
+}

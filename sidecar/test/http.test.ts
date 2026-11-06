@@ -15,6 +15,7 @@ function fake() {
   const calls = { encrypt: 0, prepare: 0, decrypt: 0, dispose: 0, values: [] as bigint[] };
   const sdk = {
     prepareEncryption: async () => {},
+    publicBoolean: async (h: string) => ({ handle: h, value: true, abiEncodedClearValues: '0x' + '0'.repeat(63) + '1', decryptionProof: '0x1234' }),
     encrypt: async (_contract: string, _user: string, value: bigint) => {
       calls.encrypt++; calls.values.push(value); return { handle, inputProof: '0x1234' };
     },
@@ -214,4 +215,15 @@ test('EVM routes keep loopback checks, separate size bounds and sanitized chain 
   } finally { await s.close(); }
   const noEvm=await service();
   try { assert.equal((await noEvm.post('/evm/read',body)).status,404); } finally { await noEvm.close(); }
+});
+
+test('public boolean proof route rejects amount handles and wrong chains', async () => {
+  const s = await service();
+  try {
+    const h = '0x' + 'ab'.repeat(22) + '0000000000aa36a7' + '0000';
+    const r = await s.post('/public-boolean', { handle: h });
+    assert.equal(r.status, 200); assert.equal(r.body.value, true); assert.equal(r.body.decryptionProof, '0x1234');
+    assert.equal((await s.post('/public-boolean', { handle: h.slice(0, 62) + '0500' })).status, 400);
+    assert.equal((await s.post('/public-boolean', { handle: h.slice(0, 46) + '00000000000000010000' })).status, 400);
+  } finally { await s.close(); }
 });
