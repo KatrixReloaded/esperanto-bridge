@@ -1,0 +1,9 @@
+.git
+**/node_modules
+**/target
+**/.env*
+**/*.pem
+**/*.key
+**/*.eif
+artifacts
+infra/.terraform

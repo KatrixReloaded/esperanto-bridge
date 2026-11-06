@@ -1,0 +1,14 @@
+{
+  "domain": {
+    "chain_id": 11155111,
+    "registry": "0x0000000000000000000000000000000000000000",
+    "bridge": "0x0000000000000000000000000000000000000000",
+    "policy_version": 1
+  },
+  "kms": {
+    "region": "us-east-1",
+    "key_arn": "arn:aws:kms:us-east-1:000000000000:key/REPLACE",
+    "forward_port": 8445
+  },
+  "initialize": false
+}
