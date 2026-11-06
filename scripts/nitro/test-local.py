@@ -9,6 +9,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,6 +22,25 @@ def module(name, filename):
 
 
 class LocalTests(unittest.TestCase):
+    def test_connect_gateway_port_requires_exact_allowlist(self):
+        forward = module("forward", "forward.py")
+        for authority, allowed, permitted in [("nym.test:9001", ["nym.test:9001"], True),
+                                               ("nym.test:9000", ["nym.test:9001"], False),
+                                               ("nym.test:9001", ["nym.test"], False),
+                                               ("nym.test:443", ["nym.test"], True)]:
+            source, client = socket.socketpair()
+            with source, client, patch.object(forward.socket, "create_connection") as connect, patch.object(forward, "relay"):
+                source.sendall(f"CONNECT {authority} HTTP/1.1\r\n\r\n".encode())
+                if permitted:
+                    forward.tunnel(client, allowed)
+                    connect.assert_called_once_with(("nym.test", int(authority.rsplit(":", 1)[1])), timeout=10)
+                    self.assertIn(b"200", source.recv(100))
+                else:
+                    with self.assertRaises(ValueError):
+                        forward.tunnel(client, allowed)
+                    connect.assert_not_called()
+                    self.assertIn(b"403", source.recv(100))
+
     def test_forwarding_preserves_bytes_and_half_closes(self):
         forward = module("forward", "forward.py")
         source, left = socket.socketpair()

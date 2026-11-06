@@ -1,0 +1,15 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 51849f1..d18c77f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4583,0 +4584 @@ dependencies = [
++ "system-configuration 0.7.0",
+@@ -4586,0 +4588 @@ dependencies = [
++ "windows-registry",
+diff --git a/Cargo.toml b/Cargo.toml
+index 577e0ce..3051a34 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -368 +368 @@ regex = "1.10.6"
+-reqwest = { version = "0.13.1", default-features = false }
++reqwest = { version = "0.13.1", default-features = false, features = ["system-proxy"] }

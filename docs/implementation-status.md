@@ -14,6 +14,8 @@ The four worker tracks provide a local foundation for a private-to-private Moner
 
 `contracts/INTERFACES.md` defines the shared protocol. Withdrawal destinations use three encrypted 256-bit words containing a canonical 96-byte address encoding. Eligible vaults receive access to the request ciphertexts; only a positivity bit is publicly decrypted for claim admission. Ethereum addresses, request timing, selected vaults and claims remain public. This is confidential value and destination handling, not complete Ethereum metadata anonymity.
 
+The sidecar's only current server Ethereum RPC client is configured for enclave-local Nym SOCKS with remote DNS and no direct fallback; live mixnet and Nitro egress validation are pending. Ethereum transaction submission and event watching are not implemented. Monero authenticated chain access is also unimplemented and has not been routed through Nym. Zama relayer/gateway and KMS HTTPS are separate transports. The operator-side `verify-peer.mjs` is outside this server routing.
+
 ## Required before an end-to-end demonstration
 
 1. **Validate the real Nitro image and recovery path.** Build the EIF, record reproducible non-debug measurements, exercise first proven mint, fresh identity discovery and restart on hardware, verify peer TLS against an independently trusted Ethereum state, and test KMS recipient enforcement. Local tests cannot establish these properties.

@@ -37,7 +37,7 @@ test('only the pinned SDK local user denial becomes sdk_acl_denied', () => {
 });
 
 test('rejects unsafe RPC URLs without initializing the SDK', () => {
-  for (const rpc of ['not-a-url', 'file:///tmp/rpc', 'https://user:secret@example.test']) {
+  for (const rpc of ['not-a-url', 'file:///tmp/rpc', 'http://example.test', 'https://user:secret@example.test']) {
     assert.throws(() => createSdk(rpc), { message: 'invalid_rpc_url' });
   }
 });
@@ -121,7 +121,7 @@ test('read-only adapter boundaries and exact SDK method wiring without network',
     return { encryptedValues: Array(wide ? 4 : 1).fill(ciphertext) as `0x${string}`[], inputProof: '0x1234' as const };
   });
   t.mock.method(ZamaSDK.prototype, 'terminate', () => {});
-  const sdk = createSdk('http://127.0.0.1:1');
+  const sdk = createSdk('https://example.test');
   t.after(() => sdk.dispose());
   await sdk.prepareEncryption();
   assert.equal(keyLoads, 1);

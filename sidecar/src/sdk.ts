@@ -2,9 +2,9 @@ import { MemoryStorage, ZamaSDK, createConfig, type EIP712TypedData } from '@zam
 import { EthersProvider } from '@zama-fhe/sdk/ethers';
 import { node } from '@zama-fhe/sdk/node';
 import { sepolia } from '@zama-fhe/sdk/chains';
-import { FetchRequest, JsonRpcProvider, TypedDataEncoder, ZeroAddress, getAddress, verifyTypedData } from 'ethers';
+import { JsonRpcProvider, TypedDataEncoder, ZeroAddress, getAddress, verifyTypedData } from 'ethers';
+import { rpcRequest } from './rpc.ts';
 
-const RPC_TIMEOUT_MS = 15_000;
 const RELAYER_TIMEOUT_MS = 120_000;
 const MAX_UINT64 = (1n << 64n) - 1n;
 
@@ -81,15 +81,12 @@ function signingParts(eip712: EIP712TypedData) {
 
 /** A read-only public Sepolia client. No signer or persistent credential storage. */
 export function createSdk(rpcUrl: string) {
-  let url: URL;
+  let request;
   try {
-    url = new URL(rpcUrl);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
+    request = rpcRequest(rpcUrl);
   } catch {
     throw new SdkError('invalid_rpc_url');
   }
-  const request = new FetchRequest(url.href);
-  request.timeout = RPC_TIMEOUT_MS;
   const provider = new JsonRpcProvider(request, undefined, { batchMaxCount: 1 });
   // Both SDK-level reads and backend ACL/version reads use the bounded transport.
   const network = {

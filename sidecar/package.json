@@ -12,11 +12,12 @@
     "start": "../scripts/sidecar-start.sh"
   },
   "dependencies": {
+    "@tanstack/query-core": "5.101.2",
     "@zama-fhe/sdk": "3.7.1",
     "ethers": "6.16.0",
+    "socks-proxy-agent": "8.0.5",
     "viem": "2.54.3",
-    "zod": "4.4.3",
-    "@tanstack/query-core": "5.101.2"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

@@ -10,7 +10,10 @@ for key in ('registry','bridge'):
     value=runtime['domain'][key]
     if len(bytes.fromhex(value.removeprefix('0x')))!=20 or int(value,16)==0: raise SystemExit(f'configure {key}')
 if ':000000000000:' in runtime['kms']['key_arn'] or 'REPLACE' in runtime['kms']['key_arn']: raise SystemExit('configure KMS key ARN')
-if not json.load(open('enclave/config/sidecar.json'))['ethereum_rpc'].startswith('https://'): raise SystemExit('HTTPS RPC required')
+sidecar=json.load(open('enclave/config/sidecar.json'))
+if not sidecar['ethereum_rpc'].startswith('https://'): raise SystemExit('HTTPS RPC required')
+nym=sidecar.get('nym', {})
+if any(not isinstance(nym.get(k),str) or not nym[k] or nym[k].startswith('REPLACE') for k in ('provider','gateway','api')) or not nym['api'].startswith('https://'): raise SystemExit('configure Nym requester, gateway and HTTPS API')
 PY
 mkdir -p artifacts/nitro
 cwxmr_epoch="$(git show -s --format=%ct HEAD)"

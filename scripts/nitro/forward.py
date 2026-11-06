@@ -105,10 +105,10 @@ def tunnel(client, allowed):
     if len(request) != 3 or request[0] != "CONNECT" or request[2] != "HTTP/1.1":
         raise ValueError("CONNECT required")
     hostname, port = request[1].rsplit(":", 1)
-    if hostname not in allowed or port != "443":
+    if not ((port == "443" and hostname in allowed) or request[1] in allowed):
         client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
         raise ValueError("outbound hostname denied")
-    target = socket.create_connection((hostname, 443), timeout=10)
+    target = socket.create_connection((hostname, int(port)), timeout=10)
     client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
     relay(client, target)
 

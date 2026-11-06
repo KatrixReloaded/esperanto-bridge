@@ -1,1 +1,1 @@
-{"ethereum_rpc":"https://ethereum-sepolia-rpc.publicnode.com"}
+{"ethereum_rpc":"https://ethereum-sepolia-rpc.publicnode.com","nym":{"provider":"REPLACE_WITH_NETWORK_REQUESTER_RECIPIENT","gateway":"REPLACE_WITH_ENTRY_GATEWAY_ID","api":"https://validator.nymtech.net/api"}}
