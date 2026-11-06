@@ -8,3 +8,6 @@ pub mod mints;
 pub mod observation;
 pub mod prover;
 pub mod redemptions;
+
+#[cfg(feature = "unsafe-test")]
+pub mod unsafe_test;

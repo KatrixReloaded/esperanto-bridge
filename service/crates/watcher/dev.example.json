@@ -1,0 +1,28 @@
+{
+  "mode": "UNSAFE_TEST_NO_NITRO",
+  "chain_id": 11155111,
+  "pins": {
+    "bridge": "REPLACE_FROM_unsafe-test-pins.json",
+    "bridge_code_hash": "REPLACE_FROM_unsafe-test-pins.json",
+    "registry": "REPLACE_FROM_unsafe-test-pins.json",
+    "registry_code_hash": "REPLACE_FROM_unsafe-test-pins.json",
+    "adapter": "REPLACE_FROM_unsafe-test-pins.json",
+    "adapter_code_hash": "REPLACE_FROM_unsafe-test-pins.json",
+    "verifier": "REPLACE_FROM_unsafe-test-pins.json",
+    "verifier_code_hash": "REPLACE_FROM_unsafe-test-pins.json"
+  },
+  "bundle": "dev-state/bundle.json",
+  "database_url": "postgresql://development_user@127.0.0.1:5432/cwxmr_dev",
+  "monero_rpc_url": "https://YOUR_EXPLICITLY_TRUSTED_STAGENET_DAEMON",
+  "monero_birth_height": 0,
+  "evm_deployment_block": 0,
+  "api_port": 8789,
+  "confirmations": 10,
+  "gas_limit": 3000000,
+  "max_fee_per_gas": 10000000000,
+  "max_priority_fee_per_gas": 1000000000,
+  "fee_terms_hash": "REPLACE_WITH_REVIEWED_FEE_POLICY_BYTES32",
+  "fixed_fee_atomic": 1000000000,
+  "network_fee_cap_atomic": 1000000000,
+  "max_fee_per_weight": 100000
+}

@@ -1,11 +1,13 @@
 [package]
 name = "zz-watcher"
+default-run = "zz-watcher"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [features]
 default = []
+unsafe-test = []
 nitro = ["dep:aws-nitro-enclaves-nsm-api"]
 
 [dependencies]
@@ -33,3 +35,8 @@ zz-zama = { path = "../zama" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aws-nitro-enclaves-nsm-api = { version = "=0.5.2", optional = true }
+
+[[bin]]
+name = "zz-dev"
+path = "src/bin/zz-dev.rs"
+required-features = ["unsafe-test"]

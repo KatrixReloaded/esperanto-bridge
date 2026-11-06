@@ -132,6 +132,18 @@ fn next_action(a: &PocAttempt) -> NextAction {
 }
 
 impl Redemptions {
+    #[cfg(feature = "unsafe-test")]
+    pub(crate) fn check_runner_lease(&mut self) -> Result<()> {
+        self.lease()
+    }
+    #[cfg(feature = "unsafe-test")]
+    pub(crate) fn development_pending_hash(&mut self, id: Id) -> Result<Option<Id>> {
+        let a = self.attempt(id)?;
+        Ok(a.settlement
+            .as_ref()
+            .or(a.claim.as_ref())
+            .map(|op| op.tx_hash))
+    }
     /// Caller runs mint and payout work in ONE serialized loop. Do not sign another EVM
     /// operation while the previous signer nonce is unresolved. IDs contain no plaintext amount.
     pub fn pending(&mut self) -> Result<Vec<(Id, NextAction)>> {

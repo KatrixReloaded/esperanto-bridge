@@ -15,3 +15,6 @@ contracts/out/
 .terraform/
 *.tfstate
 *.tfstate.*
+
+# Host-readable private state for the explicit unsafe development runner.
+/dev-state/

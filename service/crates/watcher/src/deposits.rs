@@ -24,6 +24,14 @@ pub struct Deposits {
     id_key: Zeroizing<[u8; 32]>,
 }
 
+pub(crate) struct PreparedMint {
+    pub request: zz_zama::mint::Mint,
+    #[cfg(feature = "unsafe-test")]
+    pub input_proof: alloy::primitives::Bytes,
+    pub signature: alloy::primitives::Bytes,
+    pub proof_request: serde_json::Value,
+}
+
 #[derive(Debug)]
 pub struct ChainUnavailable;
 impl std::fmt::Display for ChainUnavailable {
@@ -387,6 +395,36 @@ impl Deposits {
         confirmations: u64,
         lifetime: u64,
     ) -> Result<Option<(serde_json::Value, Vec<u8>)>> {
+        let Some(prepared) = self
+            .prepare_mint_authorization(
+                identity,
+                binding,
+                chain,
+                fhe,
+                evm,
+                id,
+                confirmations,
+                lifetime,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        // Normal path ALWAYS requires real NSM, including when unsafe-test was compiled.
+        let document = identity.attest_mint(binding, &prepared.request, &prepared.signature)?;
+        Ok(Some((prepared.proof_request, document)))
+    }
+    pub(crate) async fn prepare_mint_authorization(
+        &mut self,
+        identity: &Identity,
+        binding: &BindingDomain,
+        chain: &TrustedStagenet,
+        fhe: &zz_zama::fhe::Client,
+        evm: &zz_zama::evm::Client,
+        id: Id,
+        confirmations: u64,
+        lifetime: u64,
+    ) -> Result<Option<PreparedMint>> {
         ensure!(
             lifetime > 0 && lifetime <= 600,
             "mint lifetime exceeds attestation policy"
@@ -501,10 +539,9 @@ impl Deposits {
             clock.timestamp <= authorization.deadline,
             "authorization expired; reconciliation required"
         );
-        let document = identity.attest_mint(binding, &request, &authorization.signature)?;
         let hex = |bytes: &[u8]| format!("0x{}", hex::encode(bytes));
-        Ok(Some((
-            json!({
+        Ok(Some(PreparedMint {
+            proof_request: json!({
                 "schema":"cwxmr-mint-proof-request-v1",
                 "domain":{"name":"CWXMRBridge","version":"1","chainId":binding.chain_id,"verifyingContract":hex(&self.domain.bridge)},
                 "registry":hex(&decode::<20>(&binding.registry)?),
@@ -516,8 +553,11 @@ impl Deposits {
                 "policyVersion":binding.policy_version.to_string(),"publicKey":hex(&decode::<64>(&public.public_key)?),
                 "inputProof":hex(&authorization.input_proof),"signature":hex(&authorization.signature)
             }),
-            document,
-        )))
+            request,
+            #[cfg(feature = "unsafe-test")]
+            input_proof: authorization.input_proof.into(),
+            signature: authorization.signature.into(),
+        }))
     }
     /// Scan one block per iteration so the supervisor can apply backpressure and stop promptly.
     /// The caller supplies the wallet birth height; persisted cursors always take precedence.
