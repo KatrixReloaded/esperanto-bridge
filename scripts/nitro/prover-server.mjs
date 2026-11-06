@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Untrusted parent transport: public proof material only, CPU proving, no Ethereum RPC.
+// Untrusted parent transport: public proof material only, bounded CPU/network proving, no Ethereum RPC.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -32,6 +32,7 @@ export function createProverServer(config,{prover=proveCandidate,deadlineMs=5500
   if(!Number.isInteger(deadlineMs) || deadlineMs<1 || deadlineMs>550000) throw Error('Invalid server deadline');
   let busy=false;
   const server=createServer(async(req,res)=>{
+    if(req.headers.origin) { reply(res,403,{error:'browser_access_forbidden'}); req.resume(); return; }
     if(req.method!=='POST' || req.url!=='/prove') { reply(res,404,{error:'not_found'}); req.resume(); return; }
     if(busy) { reply(res,503,{error:'prover_busy'}); req.resume(); return; }
     busy=true;
@@ -56,11 +57,13 @@ export function createProverServer(config,{prover=proveCandidate,deadlineMs=5500
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    if(process.argv.length!==3) throw Error('Usage: prover-server.mjs CPU_CONFIG');
+    if(process.argv.length!==3) throw Error('Usage: prover-server.mjs CONFIG');
     const bytes=await readFile(process.argv[2]);
     if(bytes.length>65536) throw Error('Config too large');
+    const port=Number(process.env.CWXMR_PROVER_PORT ?? '8789');
+    if(!Number.isInteger(port) || port<1024 || port>65535) throw Error('Invalid CWXMR_PROVER_PORT');
     const server=createProverServer(JSON.parse(bytes));
     server.on('error',()=>{ console.error('Prover listener failed'); process.exitCode=1; });
-    server.listen(8789,'127.0.0.1',()=>console.log('Unverified CPU proof candidates on 127.0.0.1:8789; no Ethereum RPC'));
+    server.listen(port,'127.0.0.1',()=>console.log(`Unverified proof candidates on 127.0.0.1:${port}; no Ethereum RPC`));
   } catch(e) { console.error(e.message); process.exitCode=1; }
 }

@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname, parse } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { validateNetwork, networkProof } from './network-prover.mjs';
 const require = createRequire(new URL('../../contracts/package.json', import.meta.url));
 const E = require('ethers'), cbor = require('cbor');
 const run = promisify(execFile), coder = E.AbiCoder.defaultAbiCoder();
@@ -28,12 +29,13 @@ function same(a,b,label) { check(String(a).toLowerCase()===String(b).toLowerCase
 function exact(object, keys) { check(object && typeof object==='object' && !Array.isArray(object) && Object.keys(object).sort().join()===keys.split(',').sort().join(),'Unexpected object fields'); }
 function https(url) { const u=new URL(url); check(u.protocol==='https:' && !u.username && !u.password && !u.hash,'Expected HTTPS URL without userinfo'); return u.href; }
 export function validateConfig(config,{candidate=false}={}) {
-  exact(config,'schema,automataRevision,cli,sourceDirectory,prover,rpcUrl,sp1RpcUrl,timeoutSeconds,pins');
+  exact(config,'schema,automataRevision,cli,sourceDirectory,prover,rpcUrl,sp1RpcUrl,timeoutSeconds,pins'+(config.prover==='network'?',network':''));
   check(config.schema==='cwxmr-nitro-prover-v1' && config.automataRevision===REVISION,'Unsupported prover schema/revision');
   exact(config.cli,'binary,sha256'); hex(config.cli.sha256,32,'CLI SHA256');
   check(parse(config.cli.binary).root && parse(config.sourceDirectory).root,'Absolute CLI/source paths required');
   check(['cpu','network'].includes(config.prover),'Expected explicit cpu or network prover');
-  if(candidate) check(config.prover==='cpu' && config.rpcUrl===null && config.sp1RpcUrl===null,'Candidate service requires CPU and null RPC URLs');
+  if(config.prover==='network') validateNetwork(config);
+  if(candidate) check(config.rpcUrl===null && config.sp1RpcUrl===null,'Candidate service requires null RPC URLs');
   else { https(config.rpcUrl); if(config.sp1RpcUrl!==null) https(config.sp1RpcUrl); }
   check(Number.isInteger(config.timeoutSeconds) && config.timeoutSeconds>0 && config.timeoutSeconds<=540,'Prover timeout must be 1..540 seconds');
   const p=config.pins;
@@ -94,9 +96,20 @@ export function inspectDocument(bytes,expected,pins,nowMs=Date.now()) {
   const tuple=pcrTuple([...d.get('pcrs')].map(([i,v])=>[i,buffer(v,'PCR')])); same(tuple,pins.pcrTuple,'PCR policy');
   check(typeof d.get('module_id')==='string' && d.get('module_id').length>0,'Missing module ID');
   const certs=d.get('cabundle'); check(Array.isArray(certs) && certs.length>0 && certs.every(Buffer.isBuffer) && Buffer.isBuffer(d.get('certificate')),'Missing certificate chain');
-  return {timestamp:BigInt(timestamp).toString(),moduleId:d.get('module_id'),pcrTuple:tuple,reportSha256:'0x'+createHash('sha256').update(bytes).digest('hex')};
+  return {timestamp:BigInt(timestamp).toString(),moduleId:d.get('module_id'),pcrTuple:tuple,reportKeccak256:E.keccak256(bytes),reportSha256:'0x'+createHash('sha256').update(bytes).digest('hex')};
 }
 export function validateProof(proof,request,expected,document,pins,nowMs=Date.now()) {
+  if(proof.schema==='cwxmr-network-proof-v1') {
+    exact(proof,'schema,request_id,program,report_hash,locally_verified,seconds,output,proof');
+    same(proof.program,pins.programId,'program ID');
+    check(proof.locally_verified===true,'Unverified network proof');
+    hex(proof.request_id,32,'network request'); same(proof.report_hash,document.reportKeccak256,'report hash');
+    // Share all binding/PCR/freshness checks with the upstream format; aggregation metadata is
+    // unused for a single-report proof and deliberately not asserted by the bounded driver.
+    proof={zktype:'Succinct',zkvm_version:'6.1.0',proof_type:'Verifier',
+      program_id:{verifier_id:proof.program,verifier_proof_id:E.ZeroHash,aggregator_id:E.ZeroHash},
+      raw_proof:{encoded_proof:proof.proof,journal:proof.output},onchain_proof:proof.proof};
+  }
   exact(proof,'zktype,zkvm_version,program_id,raw_proof,onchain_proof,proof_type');
   exact(proof.program_id,'verifier_id,verifier_proof_id,aggregator_id');
   exact(proof.raw_proof,'encoded_proof,journal');
@@ -154,7 +167,8 @@ export function proverEnvironment(env,mode) {
   for(const name of ['SSL_CERT_FILE','SSL_CERT_DIR','TMPDIR']) if(env[name]) out[name]=env[name];
   return out;
 }
-async function prove(config,report,signal) {
+async function prove(config,report,signal,request) {
+  if(config.prover==='network') return networkProof(config,request,report,{signal});
   const source=resolve(config.sourceDirectory);
   same((await run('git',['-C',source,'rev-parse','HEAD'],{signal})).stdout.trim(),REVISION,'source revision');
   const patch=await readFile(new URL('./automata-host-prover.patch',import.meta.url),'utf8');
@@ -200,7 +214,7 @@ export function assembleCandidate(config,request,report,proof,nowMs=Date.now()) 
 export async function proveCandidate(config,request,report,{signal}={}) {
   const p=validateConfig(config,{candidate:true}),expected=validateRequest(request,p);
   inspectDocument(report,expected,p);
-  const proof=await prove(config,report,signal);
+  const proof=await prove(config,report,signal,request);
   return assembleCandidate(config,request,report,proof);
 }
 export async function assemble(config,request,report,proof) {
@@ -238,9 +252,10 @@ async function main() {
   let proof;
   if(command==='prove') {
     // Validate all cheap request, document, environment and onchain policy checks before requesting paid work.
-    proverEnvironment(process.env,config.prover);
+    if(config.prover==='cpu') proverEnvironment(process.env,config.prover);
+    else check(process.env.CWXMR_ALLOW_PAID_PROVING==='1','Explicit paid proving opt-in required');
     const chain=await checkChain(config,request); chain.provider.destroy();
-    proof=await prove(config,report);
+    proof=await prove(config,report,undefined,request);
     await writeFile(rawOutput,JSON.stringify(proof,null,2)+'\n',{flag:'wx',mode:0o600});
   } else proof=await json(rest[0]);
   const result=await assemble(config,request,report,proof);

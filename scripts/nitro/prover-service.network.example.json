@@ -1,0 +1,37 @@
+{
+  "schema": "cwxmr-nitro-prover-v1",
+  "automataRevision": "65c4a4233029ea3bbe16110a80731fcfd47cf300",
+  "cli": {
+    "binary": "/absolute/path/to/network-build/cwxmr-network-prover",
+    "sha256": null
+  },
+  "sourceDirectory": "/absolute/path/to/network-build/source",
+  "prover": "network",
+  "rpcUrl": null,
+  "sp1RpcUrl": null,
+  "timeoutSeconds": 540,
+  "pins": {
+    "chainId": 11155111,
+    "bridge": null,
+    "bridgeCodeHash": null,
+    "registry": null,
+    "registryCodeHash": null,
+    "adapter": null,
+    "adapterCodeHash": null,
+    "verifier": null,
+    "verifierCodeHash": null,
+    "zkVerifier": null,
+    "zkVerifierCodeHash": null,
+    "coprocessor": 2,
+    "programId": null,
+    "rootCert": null,
+    "proofSelector": null,
+    "policyVersion": "1",
+    "pcrTuple": null
+  },
+  "network": {
+    "walletFile": "/absolute/private/path/requester.json",
+    "stateDirectory": "/absolute/private/path/proof-journal",
+    "maxRequests": 2
+  }
+}

@@ -88,7 +88,7 @@ test('real upstream historical NSM encoding parses but cannot authorize a bridge
  assert.throws(()=>inspectDocument(report,f.expected,f.pins,now),/public_key mismatch/);
 });
 
-test('candidate assembly is offline, explicitly unverified and requires CPU without RPC URLs',async()=>{
+test('candidate assembly is offline, explicitly unverified and requires bounded network config without RPC URLs',async()=>{
  const f=await fixture(),config={...f.config,rpcUrl:null};
  const result=assembleCandidate(config,f.request,f.report,f.proof,now);
  assert.equal(result.verification,'candidate_unverified');
@@ -98,7 +98,14 @@ test('candidate assembly is offline, explicitly unverified and requires CPU with
  const decoded=new E.Interface(require('./abi/Bridge.json')).decodeFunctionData('confidentialMint',result.transaction.data);
  assert.equal(decoded.evidence.proof,f.proof.onchain_proof);
  assert.throws(()=>assembleCandidate({...config,rpcUrl:'https://rpc.invalid'},f.request,f.report,f.proof,now),/null RPC/);
- assert.throws(()=>assembleCandidate({...config,prover:'network'},f.request,f.report,f.proof,now),/requires CPU/);
+ assert.throws(()=>assembleCandidate({...config,prover:'network'},f.request,f.report,f.proof,now));
+ const network={...config,prover:'network',network:{walletFile:'/private/wallet.json',stateDirectory:'/private/proofs',maxRequests:2}};
+ assert.deepEqual(assembleCandidate(network,f.request,f.report,f.proof,now),result);
+ const bounded={schema:'cwxmr-network-proof-v1',request_id:E.id('request'),program:f.pins.programId,
+   report_hash:E.keccak256(f.report),locally_verified:true,seconds:82,output:f.proof.raw_proof.journal,proof:f.proof.onchain_proof};
+ assert.deepEqual(assembleCandidate(network,f.request,f.report,bounded,now),result);
+ assert.throws(()=>assembleCandidate(network,f.request,f.report,{...bounded,program:E.id('wrong')},now),/program ID/);
+ assert.throws(()=>assembleCandidate(network,f.request,f.report,{...bounded,proof:'0xdeadbeef1234'},now),/selector/);
  assert.throws(()=>assembleCandidate(config,f.request,f.report,{...f.proof,onchain_proof:'0xdeadbeef1234'},now),/selector/);
  await serve(config,{prover:async(c,r,d)=>assembleCandidate(c,r,d,f.proof,now)},async url=>{
   const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({request:f.request,document:f.report.toString('base64')})});

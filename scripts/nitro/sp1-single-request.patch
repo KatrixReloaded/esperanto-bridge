@@ -1,0 +1,34 @@
+--- a/src/network/client.rs
++++ b/src/network/client.rs
+@@ -593,6 +593,9 @@
+         max_price_per_pgu: u64,
+         domain: Vec<u8>,
+     ) -> Result<RequestProofResponse> {
++        anyhow::ensure!(self.network_mode == NetworkMode::Mainnet, "bounded proof requires Mainnet mode");
++        let max_cost = u128::from(base_fee) + u128::from(gas_limit) * u128::from(max_price_per_pgu);
++        anyhow::ensure!(max_cost <= 1_000_000_000_000_000_000u128, "proof exceeds 1 PROVE cap");
+         // Calculate the deadline.
+         let start = SystemTime::now();
+         let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Invalid start time");
+@@ -606,8 +609,8 @@
+         // Send the request.
+         match self.network_mode {
+             NetworkMode::Mainnet => {
+-                self.with_retry(
+-                    || async {
++                // Submit once; an ambiguous transport failure must be reconciled, not retried.
++                async {
+                         let mut rpc = self.auction_prover_network_client().await?;
+                         let nonce = self.get_nonce().await?;
+ 
+@@ -655,9 +658,7 @@
+                             .into_inner();
+ 
+                         Ok(RequestProofResponse::from(request_response))
+-                    },
+-                    "requesting proof",
+-                )
++                    }
+                 .await
+             }
+             NetworkMode::Reserved => {
