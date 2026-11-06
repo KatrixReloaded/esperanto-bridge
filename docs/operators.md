@@ -104,7 +104,15 @@ After any future funded operation, drain/reconcile obligations before stopping. 
 
 ## Verification and hardware release gates
 
-Local checks cover real native TLS key possession/pin rejection, no native attestation, exact binding/domain changes, authenticated key-backup roundtrip/tamper rejection, core Cipher key integration, transport byte preservation/half-close, measured-PCR rejection and template syntax. See test commands in `scripts/nitro/test-local.py` and the Rust watcher tests. Local tests do not provide Nitro evidence.
+Local checks cover real native TLS key possession/pin rejection, no native attestation, exact binding/domain changes, authenticated key-backup roundtrip/tamper rejection, core Cipher key integration, transport byte preservation/half-close, measured-PCR rejection and template syntax. After installing sidecar dependencies with Node 22 or 24, run from the repository root:
+
+```sh
+cargo build --manifest-path service/Cargo.toml -p zz-watcher
+cargo test --manifest-path service/Cargo.toml -p zz-watcher
+python3 scripts/nitro/test-local.py
+```
+
+Set `NODE_BIN` if Node is not on PATH, and `WATCHER_BIN` if using a custom Cargo target directory. These tests start a temporary native TLS server with bridge actions disabled. Local tests do not provide Nitro evidence.
 
 Remaining hardware work: actual amd64 container/EIF builds and independent matching hashes/PCRs; allocator/CPU/RAM viability; real NSM and non-debug policy; IAM/KMS recipient roundtrip/denial tests; encrypted restart/restore; SDK proxy/native-library compatibility; real Automata proof + registry enrollment; browser/peer client integration; independently authenticated Ethereum/Monero chain data; durable orchestration and rollback-resistant payout fencing. Full bridge workflows remain disabled until those gates pass.
 

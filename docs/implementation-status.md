@@ -28,6 +28,8 @@ The frontend remains a later adaptation of the existing `web/`. Arkiv, threshold
 
 ## Test interpretation
 
+Integrated local validation on 2026-11-06 passed: 35 Rust tests with the PostgreSQL integration enabled, 17 contract tests, 15 sidecar tests, four native TLS/transport/policy tests, TypeScript checking, Rust formatting, and shell/Python syntax checks. The Nitro worker also passed CloudFormation lint. All results concern the local foundation; no live-network or Nitro-hardware result is included.
+
 Local contract tests use FHEVM mocks, not production cryptography. The sidecar tests mock SDK/network behavior. Monero signing fixtures are deliberately not broadcastable. PostgreSQL tests require `CWXMR_TEST_DATABASE_URL`; a test run without it skips database integration. Nitro packaging and AWS policies require hardware and live-service validation. Dependency advisories in the reused npm graphs remain unresolved and must be assessed before a release.
 
 No test result in this repository authorizes real-fund custody. Current fail-closed gates are part of the implementation, not evidence that the missing integration has succeeded.

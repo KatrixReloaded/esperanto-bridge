@@ -41,3 +41,5 @@ cargo test --workspace
 ```
 
 Set `CWXMR_TEST_DATABASE_URL` to a disposable PostgreSQL database before running Rust tests to exercise encrypted persistence, concurrent reservations and restart behavior. That integration test is skipped when the variable is absent.
+
+For native TLS checks and the future Linux/AWS setup, follow the [Nitro operator runbook](docs/operators.md). Enclave image builds and hardware verification are still pending.
