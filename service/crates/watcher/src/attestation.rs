@@ -82,6 +82,11 @@ impl Identity {
         let bytes = zeroize::Zeroizing::new(key.private_key().to_vec_padded(32)?);
         Ok(alloy::signers::local::PrivateKeySigner::from_slice(&bytes)?)
     }
+    pub(crate) fn decrypt_signer(&self) -> Result<alloy::signers::local::PrivateKeySigner> {
+        let key = PKey::private_key_from_der(&self.decrypt)?.ec_key()?;
+        let bytes = zeroize::Zeroizing::new(key.private_key().to_vec_padded(32)?);
+        Ok(alloy::signers::local::PrivateKeySigner::from_slice(&bytes)?)
+    }
     pub(crate) fn wallet_view_pair(&self) -> Result<monero_wallet::ViewPair> {
         let spend = zeroize::Zeroizing::new(monero_wallet::ed25519::Scalar::read(
             &mut &self.monero_spend[..],

@@ -1,6 +1,7 @@
 //! Enclave-local deposit issuance and scan persistence. No RPC observation directly signs a mint.
 use crate::attestation::{decode, BindingDomain, Identity};
 use alloy::primitives::{keccak256, Address, U256};
+use alloy::sol_types::{SolCall, SolEvent};
 use anyhow::{ensure, Result};
 use monero_wallet::{address::Network, Scanner, ViewPair};
 use serde_json::json;
@@ -13,6 +14,8 @@ use zz_core::{
 };
 use zz_monero::chain::ObservedOutput;
 use zz_monero::{chain::ChainStatus, stagenet::TrustedStagenet};
+
+alloy::sol! { function getCurrentKmsContextId() external view returns (uint256); }
 
 pub struct Deposits {
     store: PostgresStore,
@@ -31,6 +34,120 @@ impl std::fmt::Display for ChainUnavailable {
 impl std::error::Error for ChainUnavailable {}
 
 impl Deposits {
+    /// Reconcile only the exact finalized mint receipt and its scoped decrypted actual amount.
+    /// Nothing is credited from an RPC acknowledgement, unfinalized receipt or requested amount.
+    pub async fn reconcile_mint(
+        &mut self,
+        identity: &Identity,
+        evm: &zz_zama::evm::Client,
+        fhe: &zz_zama::fhe::Client,
+        id: Id,
+    ) -> Result<bool> {
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        let deposit = state
+            .deposits
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| anyhow::anyhow!("unknown deposit"))?;
+        ensure!(!deposit.quarantined, "deposit quarantined");
+        let transaction = match deposit.state {
+            MintState::Submitted { transaction, .. } => transaction,
+            MintState::Confirmed { .. } => return Ok(true),
+            _ => anyhow::bail!("mint not submitted"),
+        };
+        let intent = state
+            .intents
+            .iter()
+            .find(|i| i.id == deposit.intent_id && i.domain == self.domain)
+            .ok_or_else(|| anyhow::anyhow!("intent domain mismatch"))?;
+        let observation = evm.receipt(transaction.0.into()).await?;
+        if observation.finality != zz_zama::evm::Finality::Finalized {
+            return Ok(false);
+        }
+        let receipt = observation
+            .receipt
+            .ok_or_else(|| anyhow::anyhow!("finalized receipt missing"))?;
+        if receipt.status != 1 {
+            self.store
+                .update(self.domain.vault, |state| {
+                    state.quarantine_deposit(id)?;
+                    Ok(())
+                })
+                .map_err(|_| anyhow::anyhow!("reverted mint persistence failed"))?;
+            anyhow::bail!("mint reverted; reconciliation required");
+        }
+        let handle = mint_event_handle(&receipt.logs, &self.domain, id, intent.recipient)?;
+        let head = observation
+            .finalized_head
+            .ok_or_else(|| anyhow::anyhow!("finalized head missing"))?;
+        let read = zz_zama::Bridge::mintedAmountsCall(id.0.into());
+        let stored = evm
+            .call(
+                Address::from(self.domain.bridge),
+                read.abi_encode().into(),
+                head.hash,
+            )
+            .await?
+            .result;
+        ensure!(
+            zz_zama::Bridge::mintedAmountsCall::abi_decode_returns_validate(&stored)? == handle,
+            "mint amount handle mismatch"
+        );
+        let kms = alloy::primitives::address!("5D8BD78e2ea6bbE41f26dFe9fdaEAa349e077478");
+        let context = evm
+            .call(
+                kms,
+                getCurrentKmsContextIdCall {}.abi_encode().into(),
+                head.hash,
+            )
+            .await?
+            .result;
+        let context = getCurrentKmsContextIdCall::abi_decode_returns_validate(&context)?;
+        let signer = identity.decrypt_signer()?;
+        let scope = zz_zama::fhe::Scope {
+            contract: Address::from(self.domain.bridge),
+            user: signer.address(),
+            handle,
+            width: zz_zama::fhe::Width::Uint64,
+        };
+        let permit = fhe
+            .prepare_decryption(scope)
+            .await?
+            .authorize(&signer, context)
+            .await?;
+        let actual = zz_core::AtomicAmount(fhe.decrypt(permit).await?);
+        ensure!(actual <= deposit.amount, "actual mint exceeds backing");
+        let after = evm.receipt(transaction.0.into()).await?;
+        ensure!(
+            after.finality == zz_zama::evm::Finality::Finalized
+                && after
+                    .receipt
+                    .as_ref()
+                    .is_some_and(|r| r.block_hash == receipt.block_hash && r.status == 1),
+            "receipt changed during decryption"
+        );
+        self.store
+            .update(self.domain.vault, |state| {
+                state.confirm_mint(
+                    id,
+                    transaction,
+                    actual,
+                    ChainEvidence {
+                        height: receipt.block_number,
+                        block_hash: Id(receipt.block_hash.0),
+                    },
+                )?;
+                if actual.0 != 0 {
+                    state.record_mint_result(id, actual)?;
+                }
+                Ok(())
+            })
+            .map_err(|_| anyhow::anyhow!("mint confirmation persistence failed"))?;
+        Ok(true)
+    }
     /// Validate the prover's calldata against the durable authorization, then persist the exact
     /// signed envelope before handing it to any network transport. No transaction is sent here.
     pub async fn journal_mint_transaction(
@@ -564,7 +681,7 @@ impl Deposits {
     }
 
     /// One database transaction for the complete scanned block. Primary-address/change and
-    /// coinbase outputs cannot create deposit records; duplicate output keys reject the batch.
+    /// coinbase outputs cannot create deposit records; previously recorded output keys are ignored.
     pub fn observe_block(
         &mut self,
         block: ChainEvidence,
@@ -648,10 +765,82 @@ impl Deposits {
     }
 }
 
+fn mint_event_handle(
+    logs: &[zz_zama::evm::LogObservation],
+    domain: &Domain,
+    id: Id,
+    recipient: [u8; 20],
+) -> Result<alloy::primitives::B256> {
+    let mut matched = None;
+    for log in logs {
+        if log.address != Address::from(domain.bridge)
+            || log.topics.first() != Some(&zz_zama::Bridge::DepositMinted::SIGNATURE_HASH)
+        {
+            continue;
+        }
+        let event = zz_zama::Bridge::DepositMinted::decode_raw_log_validate(
+            log.topics.iter().copied(),
+            &log.data,
+        )?;
+        ensure!(
+            !log.removed
+                && event.depositId.0 == id.0
+                && event.vaultId.0 == domain.vault.0
+                && event.recipient == Address::from(recipient)
+                && matched.is_none(),
+            "mint receipt scope mismatch"
+        );
+        matched = Some(event.actualAmount);
+    }
+    matched.ok_or_else(|| anyhow::anyhow!("expected one exact mint event"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use zz_core::storage::{Cipher, DataKeySource};
+    #[test]
+    fn receipt_requires_one_matching_bridge_vault_deposit_and_recipient() {
+        let domain = Domain {
+            chain_id: 11155111,
+            bridge: [1; 20],
+            vault: Id([2; 32]),
+        };
+        let id = Id([3; 32]);
+        let recipient = [4; 20];
+        let event = zz_zama::Bridge::DepositMinted {
+            depositId: id.0.into(),
+            vaultId: domain.vault.0.into(),
+            recipient: recipient.into(),
+            actualAmount: [5; 32].into(),
+        }
+        .encode_log_data();
+        let log = zz_zama::evm::LogObservation {
+            address: domain.bridge.into(),
+            topics: event.topics().to_vec(),
+            data: event.data,
+            block_hash: [6; 32].into(),
+            block_number: 7,
+            transaction_hash: [8; 32].into(),
+            transaction_index: 0,
+            log_index: 0,
+            removed: false,
+        };
+        assert_eq!(
+            mint_event_handle(&[log.clone()], &domain, id, recipient).unwrap(),
+            alloy::primitives::B256::from([5; 32])
+        );
+        assert!(mint_event_handle(&[], &domain, id, recipient).is_err());
+        assert!(mint_event_handle(&[log.clone(), log.clone()], &domain, id, recipient).is_err());
+        assert!(mint_event_handle(&[log.clone()], &domain, id, [9; 20]).is_err());
+        assert!(mint_event_handle(&[log.clone()], &domain, Id([9; 32]), recipient).is_err());
+        let mut wrong = domain.clone();
+        wrong.vault = Id([9; 32]);
+        assert!(mint_event_handle(&[log.clone()], &wrong, id, recipient).is_err());
+        wrong = domain;
+        wrong.bridge = [9; 20];
+        assert!(mint_event_handle(&[log], &wrong, id, recipient).is_err());
+    }
     struct Key;
     impl DataKeySource for Key {
         fn data_key(
