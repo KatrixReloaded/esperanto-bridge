@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { test } from 'node:test';
-import { rpcRequest } from '../src/rpc.ts';
+import { rpcRequest, retryableHttpStatus } from '../src/rpc.ts';
+
+test('HTTP retry classification limits 404 to the observed 1rpc endpoint', () => {
+  const exact=new URL('https://1rpc.io/sepolia');
+  assert.equal(retryableHttpStatus(exact,404),true);
+  for(const url of ['https://1rpc.io/sepolia?other=1','https://1rpc.io/other','https://example.org/sepolia'])
+    assert.equal(retryableHttpStatus(new URL(url),404),false);
+  for(const status of [429,502,503,504])assert.equal(retryableHttpStatus(new URL('https://example.org'),status),true);
+  for(const status of [200,400,401,403,500])assert.equal(retryableHttpStatus(exact,status),false);
+});
 
 test('RPC sends the destination hostname to SOCKS and fails if the tunnel fails', async () => {
   let destination = '';

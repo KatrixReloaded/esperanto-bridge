@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Wallet, keccak256 } from 'ethers';
 import { EvmClient, CHAIN_ID, RPC_TRUST, type RpcCall } from '../src/evm.ts';
+import { RetryableRpcError } from '../src/rpc.ts';
 const hash = (n: number) => '0x' + n.toString(16).padStart(2, '0').repeat(32);
 const account = '0x' + '22'.repeat(20);
 const header = (number = '0xa', h = hash(1)) => ({ number, hash: h, parentHash: hash(2), timestamp: '0x65555555' });
@@ -60,6 +61,43 @@ test('timeout, node error, and hash mismatch stay ambiguous without resend or re
     assert.equal(m.calls.filter(c=>c.method==='eth_sendRawTransaction').length,1);
     assert.ok(!JSON.stringify(response).includes('private'));
   }
+});
+
+test('read and receipt retry only classified transient failures within their deadline', async () => {
+  let reads=0, chain=0;
+  const client=new EvmClient(async method=>{
+    if(method==='eth_chainId'){if(++chain===1)throw new RetryableRpcError('rpc_http_transient');return '0xaa36a7';}
+    if(++reads<3)throw new RetryableRpcError('rpc_transport_failed');
+    return method==='eth_getTransactionReceipt'?null:'0x13';
+  },3000);
+  assert.equal((await client.handle('/evm/read',{chainId:CHAIN_ID,method:'eth_gasPrice',params:[]}) as any).result,'0x13');
+  assert.equal(chain,2);assert.equal(reads,3);
+  reads=0;
+  assert.equal((await client.handle('/evm/receipt',{chainId:CHAIN_ID,hash:hash(8)}) as any).receipt,null);
+  assert.equal(reads,3);
+  let failures=0;
+  const exhausted=new EvmClient(async method=>{if(method==='eth_chainId')return '0xaa36a7';failures++;throw new RetryableRpcError('rpc_http_transient');},3000);
+  await assert.rejects(()=>exhausted.handle('/evm/read',{chainId:CHAIN_ID,method:'eth_gasPrice',params:[]}));
+  assert.equal(failures,3);
+  failures=0;
+  const malformed=new EvmClient(async method=>{if(method==='eth_chainId')return '0xaa36a7';failures++;throw Error('rpc_response_rejected');});
+  await assert.rejects(()=>malformed.handle('/evm/read',{chainId:CHAIN_ID,method:'eth_gasPrice',params:[]}));
+  assert.equal(failures,1);
+  const start=Date.now();let stalled=0;
+  const timeout=new EvmClient(async method=>{if(method==='eth_chainId')return '0xaa36a7';stalled++;return new Promise(()=>{});},50);
+  await assert.rejects(()=>timeout.handle('/evm/read',{chainId:CHAIN_ID,method:'eth_gasPrice',params:[]}));
+  assert.equal(stalled,1);assert.ok(Date.now()-start<500);
+});
+
+test('transient errors never retry a send or its chain check', async () => {
+  const tx=await signed();let calls:string[]=[];
+  const client=new EvmClient(async method=>{calls.push(method);if(method==='eth_chainId')return '0xaa36a7';throw new RetryableRpcError('rpc_http_transient');});
+  assert.equal((await client.handle('/evm/send',tx) as any).outcome,'ambiguous');
+  assert.deepEqual(calls,['eth_chainId','eth_sendRawTransaction']);
+  calls=[];
+  const check=new EvmClient(async method=>{calls.push(method);throw new RetryableRpcError('rpc_http_transient');});
+  await assert.rejects(()=>check.handle('/evm/send',tx));
+  assert.deepEqual(calls,['eth_chainId']);
 });
 
 function receipt(txHash: string) {

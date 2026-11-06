@@ -1,5 +1,5 @@
 import { Transaction, getAddress, keccak256 } from 'ethers';
-import { rpcJson } from './rpc.ts';
+import { rpcJson, RetryableRpcError } from './rpc.ts';
 
 export const CHAIN_ID = '11155111';
 export const RPC_TRUST = 'explicitly_trusted_rpc';
@@ -158,16 +158,27 @@ export class EvmClient {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new Error('invalid_evm_timeout');
     this.rpc = rpc; this.timeout = timeoutMs;
   }
-  private async call(method: string, params: unknown[], deadline: number): Promise<unknown> {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new EvmError('rpc_timeout', 504);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try { return await Promise.race([this.rpc(method, params, remaining), new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new EvmError('rpc_timeout', 504)), remaining);
-    })]); } finally { clearTimeout(timer); }
+  private async call(method: string, params: unknown[], deadline: number, retryRead = false): Promise<unknown> {
+    const attempts = retryRead ? 3 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new EvmError('rpc_timeout', 504);
+      const budget = retryRead ? Math.min(40_000, remaining) : remaining;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([this.rpc(method, params, budget), new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new RetryableRpcError('rpc_timeout')), budget);
+        })]);
+      } catch (error) {
+        if (!(error instanceof RetryableRpcError) || attempt + 1 === attempts || Date.now() >= deadline) throw error;
+        const pause = Math.min(250, deadline - Date.now());
+        if (pause > 0) await new Promise(resolve => setTimeout(resolve, pause));
+      } finally { clearTimeout(timer); }
+    }
+    throw new EvmError('rpc_timeout', 504);
   }
-  private async checkChain(deadline: number) {
-    if (await this.call('eth_chainId', [], deadline) !== '0xaa36a7') throw new EvmError('chain_mismatch', 409);
+  private async checkChain(deadline: number, retryRead = false) {
+    if (await this.call('eth_chainId', [], deadline, retryRead) !== '0xaa36a7') throw new EvmError('chain_mismatch', 409);
   }
   async handle(route: string, body: ObjectValue): Promise<unknown> {
     const deadline = Date.now() + this.timeout;
@@ -175,8 +186,8 @@ export class EvmClient {
     if (route === '/evm/read') {
       fields(body, ['chainId', 'method', 'params']);
       const params = readParams(body.method, body.params);
-      await this.checkChain(deadline);
-      return { chainId: CHAIN_ID, trust: RPC_TRUST, result: readResult(body.method, params, await this.call(body.method, params, deadline)) };
+      await this.checkChain(deadline, true);
+      return { chainId: CHAIN_ID, trust: RPC_TRUST, result: readResult(body.method, params, await this.call(body.method, params, deadline, true)) };
     }
     if (route === '/evm/send') {
       fields(body, ['chainId', 'rawTransaction', 'expectedHash']);
@@ -194,16 +205,16 @@ export class EvmClient {
     if (route === '/evm/receipt') {
       fields(body, ['chainId', 'hash']);
       const expected = hash(body.hash);
-      await this.checkChain(deadline);
-      const value = await this.call('eth_getTransactionReceipt', [expected], deadline);
+      await this.checkChain(deadline, true);
+      const value = await this.call('eth_getTransactionReceipt', [expected], deadline, true);
       if (value === null) return { chainId: CHAIN_ID, trust: RPC_TRUST, receipt: null, finality: 'not_found', finalizedHead: null };
       const r = object(value);
       if (hash(r.transactionHash) !== expected || !['0x0', '0x1'].includes(r.status)) return bad('rpc_receipt_scope_mismatch');
       quantity(r.blockNumber); quantity(r.transactionIndex); quantity(r.gasUsed);
       const h = hash(r.blockHash), receiptLogs = logs(r.logs);
       if (receiptLogs.some(l => l.transactionHash !== expected || l.blockHash !== h || quantity(l.blockNumber) !== quantity(r.blockNumber) || quantity(l.transactionIndex) !== quantity(r.transactionIndex))) return bad('rpc_receipt_scope_mismatch');
-      const head = block(await this.call('eth_getBlockByNumber', ['finalized', false], deadline));
-      const canonical = block(await this.call('eth_getBlockByNumber', [r.blockNumber, false], deadline));
+      const head = block(await this.call('eth_getBlockByNumber', ['finalized', false], deadline, true));
+      const canonical = block(await this.call('eth_getBlockByNumber', [r.blockNumber, false], deadline, true));
       if (canonical.hash !== h || quantity(canonical.number) !== quantity(r.blockNumber) || (quantity(head.number) === quantity(r.blockNumber) && head.hash !== h)) return bad('rpc_receipt_not_canonical');
       const receipt = { transactionHash: expected, blockHash: h, blockNumber: r.blockNumber, transactionIndex: r.transactionIndex, status: r.status, gasUsed: r.gasUsed, logs: receiptLogs };
       return { chainId: CHAIN_ID, trust: RPC_TRUST, receipt, finality: quantity(head.number) >= quantity(r.blockNumber) ? 'finalized' : 'included', finalizedHead: head };

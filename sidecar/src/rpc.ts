@@ -1,6 +1,13 @@
 import { FetchRequest } from 'ethers';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
+// Only transport failures and explicitly transient HTTP statuses are retryable.
+export class RetryableRpcError extends Error {}
+export function retryableHttpStatus(url: URL, status: number | undefined): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504 ||
+    (status === 404 && url.href === 'https://1rpc.io/sepolia');
+}
+
 /** Ethereum RPC uses only the enclave-local Nym SOCKS listener; DNS occurs at the exit. */
 export function rpcRequest(rpcUrl: string, proxyPort = 1080): FetchRequest {
   const url = new URL(rpcUrl);
@@ -33,16 +40,19 @@ export async function rpcJson(rpcUrl: string, payload: unknown, options: { proxy
       settled = true; clearTimeout(deadline); req.destroy(); agent.destroy();
       if (error) reject(error); else resolve(value);
     };
-    const deadline = setTimeout(() => finish(new Error('rpc_timeout')), timeout);
-    req.on('error', () => finish(new Error('rpc_transport_failed')));
+    const deadline = setTimeout(() => finish(new RetryableRpcError('rpc_timeout')), timeout);
+    req.on('error', () => finish(new RetryableRpcError('rpc_transport_failed')));
     req.once('response', response => {
+      if (retryableHttpStatus(url, response.statusCode)) {
+        response.destroy(); finish(new RetryableRpcError('rpc_http_transient')); return;
+      }
       if (response.statusCode !== 200 || (response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity') ||
           !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(response.headers['content-type'] ?? '')) {
         response.destroy(); finish(new Error('rpc_response_rejected')); return;
       }
       let size = 0;
       const chunks: Buffer[] = [];
-      response.on('error', () => finish(new Error('rpc_transport_failed')));
+      response.on('error', () => finish(new RetryableRpcError('rpc_transport_failed')));
       response.on('data', (chunk: Buffer) => {
         size += chunk.length;
         if (size > 1024 * 1024) { response.destroy(); finish(new Error('rpc_response_too_large')); }
