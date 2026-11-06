@@ -97,6 +97,8 @@ PublicNode is used here only by operator deployment commands. Backend chain RPC 
 
 ## Runtime and validation boundary
 
-The separate `unsafe-test` backend feature and development runner are under implementation. They must use their own persistent development identity/database, explicit trusted-node and single-operator assumptions, synthetic journal generation and these new contract pins. No fake NSM response or automatic fallback belongs in the Nitro runtime. The ordinary `serve-dev` command does not currently run this bridge flow.
+The separate `unsafe-test` backend feature and `zz-dev` runner are implemented; see [development runner instructions](../service/crates/watcher/DEV.md). They use their own persistent development identity/database, explicit trusted-node and single-operator assumptions, synthetic journal generation and these new contract pins. The integrated development library passed 18 local tests; no live round trip has been observed. No fake NSM response or automatic fallback belongs in the Nitro runtime. The ordinary `serve-dev` command does not run this bridge flow. The dedicated Linux development image remains under integration.
 
 Before funding, finish the Linux runtime integration and pin the local development endpoint. Then create a stagenet user wallet, obtain faucet funds, fund the development vault's Sepolia signing address, issue an XMR deposit intent, wait for the real confidential mint, request withdrawal and confirm the real stagenet payout and Ethereum settlement. A passed local contract test uses FHEVM mocks and does not establish this live round trip.
+
+For the separate user wallet, [Docker CLI instructions](../scripts/monero-wallet/README.md) keep the wallet files outside the container and use the official Linux release.
