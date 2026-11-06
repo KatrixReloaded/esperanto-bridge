@@ -1,0 +1,14 @@
+**/target/
+**/node_modules/
+**/artifacts/
+**/cache/
+**/coverage/
+.env
+.env.*
+!.env.example
+*.eif
+*.pem
+*.key
+.terraform/
+*.tfstate
+*.tfstate.*
