@@ -17,6 +17,7 @@ TEST_RPC_URL="https://ethereum-sepolia-rpc.publicnode.com"
 TEST_OWNER=$(cast wallet address --account personal)
 test "$(cast chain-id --rpc-url "$TEST_RPC_URL")" = "11155111"
 npm ci
+mkdir -p artifacts
 
 TEST_FORGE_ARGS=(--root "$PWD" --hardhat --out out --cache-path cache/forge
   --use 0.8.28 --evm-version cancun
@@ -31,8 +32,9 @@ TEST_VERIFIER_ADDRESS=$(
   forge create "${TEST_FORGE_ARGS[@]}" \
     contracts/test/UnsafeTestNitroVerifier.sol:UnsafeTestNitroVerifier \
     --rpc-url "$TEST_RPC_URL" --account personal --broadcast --json \
-  | jq -er '.deployedTo'
+  | tee artifacts/unsafe-verifier-deployment.json | jq -er '.deployedTo'
 )
+printf "TEST_VERIFIER_ADDRESS='%s'\n" "$TEST_VERIFIER_ADDRESS" >> artifacts/unsafe-test.env
 TEST_VERIFIER_CODE=$(cast code "$TEST_VERIFIER_ADDRESS" --rpc-url "$TEST_RPC_URL")
 test "$TEST_VERIFIER_CODE" != "0x"
 TEST_VERIFIER_CODE_HASH=$(cast keccak "$TEST_VERIFIER_CODE")
@@ -49,8 +51,9 @@ TEST_ADAPTER_ADDRESS=$(
     --constructor-args "$TEST_VERIFIER_ADDRESS" "$TEST_VERIFIER_CODE_HASH" \
       "$TEST_ROOT" "$TEST_PROGRAM" 2 0x54535431 \
       "$TEST_VERIFIER_ADDRESS" "$TEST_VERIFIER_CODE_HASH" \
-  | jq -er '.deployedTo'
+  | tee artifacts/unsafe-adapter-deployment.json | jq -er '.deployedTo'
 )
+printf "TEST_ADAPTER_ADDRESS='%s'\n" "$TEST_ADAPTER_ADDRESS" >> artifacts/unsafe-test.env
 test "$(cast call "$TEST_ADAPTER_ADDRESS" 'configurationValid()(bool)' --rpc-url "$TEST_RPC_URL")" = "true"
 ```
 
@@ -59,8 +62,9 @@ TEST_BRIDGE_ADDRESS=$(
   forge create "${TEST_FORGE_ARGS[@]}" contracts/Bridge.sol:Bridge \
     --rpc-url "$TEST_RPC_URL" --account personal --broadcast --json \
     --constructor-args "$TEST_OWNER" "$TEST_ADAPTER_ADDRESS" \
-  | jq -er '.deployedTo'
+  | tee artifacts/unsafe-bridge-deployment.json | jq -er '.deployedTo'
 )
+printf "TEST_BRIDGE_ADDRESS='%s'\n" "$TEST_BRIDGE_ADDRESS" >> artifacts/unsafe-test.env
 TEST_CWXMR_ADDRESS=$(cast call "$TEST_BRIDGE_ADDRESS" 'token()(address)' --rpc-url "$TEST_RPC_URL")
 TEST_REGISTRY_ADDRESS=$(cast call "$TEST_BRIDGE_ADDRESS" 'registry()(address)' --rpc-url "$TEST_RPC_URL")
 
@@ -94,6 +98,8 @@ jq -n \
 ```
 
 PublicNode is used here only by operator deployment commands. Backend chain RPC continues through Nym; the tested Nym exit required the explicitly configured `https://1rpc.io/sepolia` instead of PublicNode.
+
+Each deployment's JSON and address are saved immediately under `artifacts/`, before subsequent reads. An empty return-data/ABI decoding error immediately after deployment can be a temporarily lagging RPC read. Check the saved deployment receipt and retry the read after the RPC catches up; do not automatically redeploy. After closing a terminal, source `artifacts/unsafe-test.env` for saved addresses, then restore the public RPC/build settings above. The final `unsafe-test-pins.json` is still required for runner configuration.
 
 ## Runtime and validation boundary
 
