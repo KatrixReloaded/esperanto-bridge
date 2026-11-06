@@ -239,7 +239,6 @@ pub fn main() -> Result<()> {
 fn run(config: Config, bundle: Bundle) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let evm = evm::Client::new("http://127.0.0.1:8788")?;
-    rt.block_on(pins::verify(&evm, &config))?;
     let chain = rt
         .block_on(TrustedStagenet::connect(&config.monero_rpc_url))
         .map_err(|_| anyhow::anyhow!("verified stagenet unavailable"))?;
@@ -343,14 +342,22 @@ async fn step(
     cursor: &mut u64,
     payment_cursor: &mut Option<u64>,
 ) -> Result<()> {
-    let head = pins::verify(evm, config).await?;
     let pending = deposits.pending_mints()?;
+    let payout = redemptions.pending()?.first().copied();
+    // Idle discovery needs no financial authority. Pending work, including reconciliation,
+    // must still pass the complete pin check on this tick; never reuse a previous tick's check.
+    let head = if pending.is_empty() && payout.is_none() {
+        None
+    } else {
+        Some(pins::verify(evm, config).await?)
+    };
     // Reconcile existing mint envelopes before allocating any new signer nonce.
     if let Some((id, _)) = pending.iter().find(|(_, submitted)| *submitted) {
         deposits.reconcile_mint(identity, evm, fhe, *id).await?;
         return Ok(());
     }
-    if let Some((id, action)) = redemptions.pending()?.first().copied() {
+    if let Some((id, action)) = payout {
+        let head = head.context("pending payout pin verification missing")?;
         match action {
             NextAction::JournalClaim => {
                 redemptions
@@ -460,6 +467,9 @@ async fn step(
     }
     let to = head.number.min(cursor.saturating_add(255));
     for id in redemptions.discover(evm, *cursor, to).await? {
+        // A discovered log is not authority to decrypt or reserve funds. Verify before prepare,
+        // including when this tick skipped the pending-work check above.
+        pins::verify(evm, config).await?;
         // prepare is idempotent for completed journal entries. Only an actual positive burn can
         // create an attempt; an unsupported/zero candidate stops for explicit reconciliation.
         redemptions.prepare(identity, chain, evm, fhe, id).await?;
