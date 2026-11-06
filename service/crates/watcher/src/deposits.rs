@@ -651,7 +651,7 @@ impl Deposits {
             coinbase: false,
         };
         match chain
-            .status(&observed, confirmations)
+            .mint_status(&observed, confirmations)
             .await
             .map_err(|_| anyhow::anyhow!("chain status unavailable"))?
         {

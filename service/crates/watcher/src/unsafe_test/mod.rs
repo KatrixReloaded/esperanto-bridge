@@ -51,6 +51,8 @@ pub struct Config {
     pub evm_deployment_block: u64,
     pub api_port: u16,
     pub confirmations: u64,
+    #[serde(default)]
+    pub demo_mint_confirmations: Option<u64>,
     pub gas_limit: u64,
     pub max_fee_per_gas: u64,
     pub max_priority_fee_per_gas: u64,
@@ -66,6 +68,7 @@ impl Config {
                 && self.chain_id == 11155111
                 && self.api_port > 0
                 && self.confirmations >= 10
+                && self.demo_mint_confirmations.is_none_or(|n| n >= 3)
                 && self.gas_limit > 0
                 && self.gas_limit <= 10_000_000
                 && self.max_fee_per_gas > 0
@@ -242,9 +245,12 @@ fn run(config: Config, bundle: Bundle) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let evm = evm::Client::new("http://127.0.0.1:8788")?;
     eprintln!("UNSAFE TEST startup: trusted_stagenet_connection");
-    let chain = rt
+    let mut chain = rt
         .block_on(TrustedStagenet::connect(&config.monero_rpc_url))
         .map_err(|_| anyhow::anyhow!("verified stagenet unavailable"))?;
+    if let Some(confirmations) = config.demo_mint_confirmations {
+        chain = chain.with_demo_mint_confirmations(confirmations)?;
+    }
     let binding = config.binding();
     let d = domain(&config, &bundle)?;
     eprintln!("UNSAFE TEST startup: encrypted_deposit_store");
@@ -661,6 +667,12 @@ mod tests {
     fn explicit_mode_mainnet_remote_database_and_fee_limits() {
         let mut c = config();
         assert!(c.validate().is_ok());
+        assert_eq!(c.demo_mint_confirmations, None);
+        c.demo_mint_confirmations = Some(3);
+        assert!(c.validate().is_ok());
+        c.demo_mint_confirmations = Some(2);
+        assert!(c.validate().is_err());
+        c.demo_mint_confirmations = None;
         c.mode = "production".into();
         assert!(c.validate().is_err());
         c.mode = MODE.into();

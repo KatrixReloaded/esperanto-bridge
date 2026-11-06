@@ -35,11 +35,38 @@ fn maturity(
     lock: Timelock,
     median_time: Option<u64>,
 ) -> Result<ChainStatus, InterfaceError> {
+    confirmation_status(
+        depth,
+        coinbase,
+        confirmations,
+        tip_height,
+        lock,
+        median_time,
+        false,
+    )
+}
+
+fn confirmation_status(
+    depth: u64,
+    coinbase: bool,
+    confirmations: u64,
+    tip_height: u64,
+    lock: Timelock,
+    median_time: Option<u64>,
+    demo_mint: bool,
+) -> Result<ChainStatus, InterfaceError> {
     if confirmations == 0 {
         return Err(unavailable());
     }
     let enough = depth.checked_add(1).ok_or_else(unavailable)? >= confirmations
-        && depth >= if coinbase { 60 } else { 10 };
+        && depth
+            >= if coinbase {
+                60
+            } else if demo_mint {
+                0
+            } else {
+                10
+            };
     let unlocked = match lock {
         Timelock::None => true,
         Timelock::Block(h) => tip_height >= u64::try_from(h).map_err(|_| unavailable())?,
@@ -151,6 +178,7 @@ impl HttpTransport for NymTransport {
 /// Its answers are not an independent consensus or inclusion proof.
 pub struct TrustedStagenet {
     daemon: MoneroDaemon<NymTransport>,
+    demo_mint_confirmations: Option<u64>,
 }
 
 pub struct ScannedBlock {
@@ -169,7 +197,33 @@ impl TrustedStagenet {
     pub async fn connect(node: &str) -> Result<Self, InterfaceError> {
         let transport = NymTransport::new(node, "socks5h://127.0.0.1:1080")?;
         let daemon = checked_daemon(transport).await?;
-        Ok(Self { daemon })
+        Ok(Self {
+            daemon,
+            demo_mint_confirmations: None,
+        })
+    }
+    /// Explicit stagenet demo policy. This changes mint eligibility, never spendability.
+    pub fn with_demo_mint_confirmations(
+        mut self,
+        confirmations: u64,
+    ) -> Result<Self, InterfaceError> {
+        if confirmations < 3 {
+            return Err(unavailable());
+        }
+        self.demo_mint_confirmations = Some(confirmations);
+        Ok(self)
+    }
+
+    /// Inclusion counts as confirmation one. Default policy still requires spendable backing.
+    pub async fn mint_status(
+        &self,
+        observed: &ObservedOutput,
+        confirmations: u64,
+    ) -> Result<ChainStatus, InterfaceError> {
+        match self.demo_mint_confirmations {
+            Some(demo) => self.status_with_policy(observed, demo, true).await,
+            None => self.status(observed, confirmations).await,
+        }
     }
     /// Real daemon-backed decoy selection, with the operator's fee cap. The node is trusted.
     pub async fn payout_inputs(
@@ -276,6 +330,16 @@ impl TrustedStagenet {
         observed: &ObservedOutput,
         confirmations: u64,
     ) -> Result<ChainStatus, InterfaceError> {
+        self.status_with_policy(observed, confirmations, false)
+            .await
+    }
+
+    async fn status_with_policy(
+        &self,
+        observed: &ObservedOutput,
+        confirmations: u64,
+        demo_mint: bool,
+    ) -> Result<ChainStatus, InterfaceError> {
         if confirmations == 0 {
             return Err(unavailable());
         }
@@ -311,13 +375,24 @@ impl TrustedStagenet {
         {
             return Err(unavailable());
         }
-        maturity(
+        if !demo_mint {
+            return maturity(
+                depth,
+                observed.coinbase,
+                confirmations,
+                tip.height,
+                lock,
+                median_time,
+            );
+        }
+        confirmation_status(
             depth,
             observed.coinbase,
             confirmations,
             tip.height,
             lock,
             median_time,
+            true,
         )
     }
 
@@ -471,6 +546,36 @@ mod tests {
         );
         assert!(maturity(10, false, 0, 50, Timelock::None, None).is_err());
         assert!(maturity(10, false, 1, 50, Timelock::Time(2_000_000_000), None).is_err());
+    }
+
+    #[test]
+    fn demo_mint_at_three_confirmations_does_not_unlock_spending() {
+        assert_eq!(
+            confirmation_status(1, false, 3, 50, Timelock::None, None, true).unwrap(),
+            ChainStatus::Pending
+        );
+        assert_eq!(
+            confirmation_status(2, false, 3, 50, Timelock::None, None, true).unwrap(),
+            ChainStatus::Mature
+        );
+        // Even the same requested threshold cannot bypass ordinary payout maturity.
+        assert_eq!(
+            maturity(2, false, 3, 50, Timelock::None, None).unwrap(),
+            ChainStatus::Pending
+        );
+        assert_eq!(
+            maturity(10, false, 10, 50, Timelock::None, None).unwrap(),
+            ChainStatus::Mature
+        );
+        assert_eq!(
+            confirmation_status(2, true, 3, 50, Timelock::None, None, true).unwrap(),
+            ChainStatus::Pending
+        );
+        assert_eq!(
+            confirmation_status(2, false, 3, 50, Timelock::Block(51), None, true).unwrap(),
+            ChainStatus::Pending
+        );
+        assert!(confirmation_status(2, false, 3, 50, Timelock::Time(100), None, true).is_err());
     }
 
     #[derive(Clone)]
