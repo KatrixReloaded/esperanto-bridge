@@ -1,4 +1,5 @@
 # /etc/nitro_enclaves/allocator.yaml on the parent; requires allocator restart.
 # Enclave CPU/memory remain dedicated while allocated.
+---
 memory_mib: 8192
 cpu_count: 2

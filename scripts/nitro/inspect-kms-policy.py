@@ -5,6 +5,7 @@ This is not a complete AWS IAM/grant/role-assumption authorization evaluator.
 import argparse
 import fnmatch
 import json
+import re
 
 
 def require(condition, message):
@@ -30,7 +31,18 @@ def includes_parent(statement, parent_arn):
     return "*" in values or parent_arn in values
 
 
-def inspect(policy, parent_arn, pcrs):
+ADMIN_ACTIONS = {
+    "kms:DescribeKey", "kms:GetKeyPolicy", "kms:PutKeyPolicy", "kms:ListKeyPolicies",
+    "kms:EnableKey", "kms:DisableKey", "kms:EnableKeyRotation", "kms:DisableKeyRotation",
+    "kms:GetKeyRotationStatus", "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion",
+    "kms:TagResource", "kms:UntagResource",
+}
+
+
+def inspect(policy, parent_arn, pcrs, reviewed_administrator=None):
+    if reviewed_administrator:
+        require(re.fullmatch(r"arn:aws:iam::[0-9]{12}:(root|role/[A-Za-z0-9+=,.@_/-]+)", reviewed_administrator),
+                "Reviewed administrator must be an exact IAM ARN")
     statements = policy["Statement"]
     require(isinstance(statements, list), "Statement must be a list")
     forbidden = ["kms:Encrypt", "kms:ReEncryptFrom", "kms:ReEncryptTo", "kms:CreateGrant",
@@ -41,6 +53,16 @@ def inspect(policy, parent_arn, pcrs):
         if statement.get("Effect") != "Allow":
             continue
         values = principals(statement)
+        if reviewed_administrator and values == [reviewed_administrator]:
+            # Explicitly reviewed policy administration is a trust boundary, not cryptographic
+            # permission. Account-root statements delegate these listed administrative actions
+            # through IAM too; never accept kms:* or key-use/grant actions in this exception.
+            actions = statement.get("Action", [])
+            if isinstance(actions, str):
+                actions = [actions]
+            require(reviewed_administrator != parent_arn and actions and set(actions) <= ADMIN_ACTIONS,
+                    "Reviewed administrator may have only exact administrative actions")
+            continue
         require(isinstance(values, list) and all(isinstance(value, str) and value != "*" and not value.endswith(":root") for value in values),
                 "Wildcard/root IAM delegation requires explicit review")
         if not includes_parent(statement, parent_arn):
@@ -76,11 +98,12 @@ def main():
     parser.add_argument("policy")
     parser.add_argument("parent_role_arn")
     parser.add_argument("approved_pcrs")
+    parser.add_argument("--reviewed-administrator", help="Exact explicitly reviewed policy administrator ARN; permits only administrative actions, never cryptographic use or grants")
     args = parser.parse_args()
     policy = json.load(open(args.policy))
     if "Policy" in policy:
         policy = json.loads(policy["Policy"])
-    inspect(policy, args.parent_role_arn, json.load(open(args.approved_pcrs)))
+    inspect(policy, args.parent_role_arn, json.load(open(args.approved_pcrs)), args.reviewed_administrator)
     print("Structural recipient restrictions present; review all administrators, IAM policies and grants separately")
 
 

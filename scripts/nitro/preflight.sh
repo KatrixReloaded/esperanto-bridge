@@ -7,5 +7,6 @@ docker info --format '{{.OSType}} {{.Architecture}}' | python3 -c 'import sys; s
 if [[ "${1:-}" == launch ]]; then
   [[ -c /dev/nitro_enclaves && -c /dev/vsock ]] || { echo 'Nitro enclave/vsock device unavailable' >&2; exit 1; }
   systemctl is-active --quiet nitro-enclaves-allocator.service
-  [[ "$(nproc)" -ge 4 ]] || { echo 'At least 4 parent vCPUs required' >&2; exit 1; }
+  # The allocator offlines enclave CPUs; nproc reports only those left for the parent.
+  [[ "$(getconf _NPROCESSORS_CONF)" -ge 4 ]] || { echo 'At least 4 total vCPUs required' >&2; exit 1; }
 fi

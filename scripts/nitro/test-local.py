@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Native transport/TLS/security-boundary checks. No AWS calls, no mock production attestations."""
 import concurrent.futures
+import ast
 import importlib.util
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 import socket
 import subprocess
@@ -22,6 +25,21 @@ def module(name, filename):
 
 
 class LocalTests(unittest.TestCase):
+    def test_database_and_proof_relays_outlive_prover_request(self):
+        # PostgreSQL holds the cooperative lease while the proof is running. Both TLS
+        # transport hops must survive that idle period, not just the proof forwarding path.
+        client = (ROOT / "service/crates/watcher/src/prover.rs").read_text()
+        deadline = max(map(int, re.findall(r"Duration::from_secs\((\d+)\)", client)))
+        tree = ast.parse((ROOT / "enclave/init.py").read_text())
+        arguments = [ast.literal_eval(n) for n in ast.walk(tree) if isinstance(n, ast.List)
+                     and n.elts and all(isinstance(x, ast.Constant) for x in n.elts)]
+        parent = (ROOT / "scripts/nitro/run-host.sh").read_text().splitlines()
+        for port in ("8446", "8447"):
+            inside = next(a for a in arguments if a[:3] == ["tcp-vsock", "--listen", port])
+            outside = shlex.split(next(line for line in parent if f"--listen {port} " in line))
+            for args in (inside, outside):
+                self.assertGreater(int(args[args.index("--idle") + 1]), deadline)
+
     def test_forwarding_idle_deadline_is_bounded(self):
         forward = module("forward_idle", "forward.py")
         source, left = socket.socketpair()
@@ -99,6 +117,15 @@ class LocalTests(unittest.TestCase):
             {"Effect": "Deny", "Principal": {"AWS": role}, "Action": ["kms:Encrypt", "kms:ReEncrypt*", "kms:CreateGrant", "kms:PutKeyPolicy", "kms:GenerateDataKeyWithoutPlaintext"]},
         ]
         policy.inspect({"Statement": statements}, role, pcrs)
+        administrator = "arn:aws:iam::123456789012:root"
+        admin = {"Effect": "Allow", "Principal": {"AWS": administrator},
+                 "Action": ["kms:DescribeKey", "kms:GetKeyPolicy", "kms:PutKeyPolicy"]}
+        with self.assertRaises(SystemExit):
+            policy.inspect({"Statement": [*statements, admin]}, role, pcrs)
+        policy.inspect({"Statement": [*statements, admin]}, role, pcrs, administrator)
+        for action in ["kms:*", "kms:Decrypt", "kms:GenerateDataKey", "kms:CreateGrant"]:
+            with self.assertRaises(SystemExit):
+                policy.inspect({"Statement": [*statements, {**admin, "Action": action}]}, role, pcrs, administrator)
         for bypass in [
             {"Effect": "Allow", "Principal": {"AWS": role}, "Action": "kms:Encrypt"},
             {"Effect": "Allow", "Principal": {"AWS": ["arn:aws:iam::123456789012:root"]}, "Action": "kms:*"},
