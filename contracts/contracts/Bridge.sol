@@ -51,11 +51,14 @@ contract Bridge is EIP712, ReentrancyGuard, ZamaEthereumConfig {
     }
 
     /// @dev Input proof is scoped to this Bridge and msg.sender, including when submission is relayed.
-    function mint(MintAuthorization calldata a, bytes calldata inputProof, bytes calldata signature)
+    function confidentialMint(MintAuthorization calldata a, bytes calldata inputProof, bytes calldata signature,
+        VaultRegistry.MintEvidence calldata evidence)
         external nonReentrant returns (euint64 actual) {
         require(a.recipient != address(0) && a.depositId != 0 && a.inputProofHash == keccak256(inputProof), InvalidInput());
-        _authorize(a.vaultId, false, a.deadline, keccak256(abi.encode(MINT_TYPEHASH, a)), signature);
+        require(block.timestamp <= a.deadline &&
+            ECDSA.recover(mintDigest(a), signature) == address(uint160(uint256(a.vaultId))), Unauthorized());
         require(!consumedDeposits[a.depositId] && !usedMintNonces[a.vaultId][a.nonce], AlreadyConsumed());
+        registry.verifyMint(a.vaultId, mintDigest(a), a.nonce, evidence);
         consumedDeposits[a.depositId] = true; usedMintNonces[a.vaultId][a.nonce] = true;
         euint64 requested = FHE.fromExternal(externalEuint64.wrap(a.amountHandle), inputProof);
         FHE.allowTransient(requested, address(token));
@@ -65,6 +68,10 @@ contract Bridge is EIP712, ReentrancyGuard, ZamaEthereumConfig {
         FHE.allow(actual, registry.decryptKey(a.vaultId));
         mintedAmounts[a.depositId] = actual;
         emit DepositMinted(a.depositId, a.vaultId, a.recipient, actual);
+    }
+
+    function mintDigest(MintAuthorization calldata a) public view returns (bytes32) {
+        return _hashTypedDataV4(keccak256(abi.encode(MINT_TYPEHASH, a)));
     }
 
     function requestRedemption(externalEuint64 amount, externalEuint256[3] calldata destination,

@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sha3::Keccak256;
 
-pub const TYPE: &str = "CWXMRNitroBinding(uint256 chainId,address registry,address bridge,bytes32 vaultId,address signingKey,address decryptKey,bytes32 tlsKeyHash,bytes32 authKeyHash,uint64 policyVersion,bytes32 challenge)";
+pub const IDENTITY_TYPE: &str = "CWXMRNitroIdentityBinding(uint256 chainId,address registry,address bridge,bytes32 vaultId,address signingKey,address decryptKey,bytes32 tlsKeyHash,bytes32 authKeyHash,uint64 policyVersion,bytes32 nonce)";
+
+pub const MINT_TYPE: &str = "CWXMRNitroMintBinding(uint256 chainId,address registry,address bridge,bytes32 vaultId,address signingKey,address decryptKey,bytes32 tlsKeyHash,bytes32 authKeyHash,uint64 policyVersion,bytes32 mintDigest)";
 
 /// Private DER keys are serialized only into an authenticated encrypted backup, inside the enclave.
 #[derive(Serialize, Deserialize)]
@@ -44,7 +46,7 @@ impl BindingDomain {
         .concat())
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PublicIdentity {
     pub vault_id: String,
     pub signing_key: String,
@@ -158,39 +160,93 @@ impl Identity {
             auth_key_hash: hex::encode(Sha256::digest(auth.raw_public_key()?)),
         })
     }
-    pub fn binding(&self, domain: &BindingDomain, challenge: [u8; 32]) -> Result<[u8; 32]> {
-        let public = self.public()?;
-        let mut words = vec![Keccak256::digest(TYPE.as_bytes()).to_vec()];
-        let mut chain = [0u8; 32];
-        chain[24..].copy_from_slice(&domain.chain_id.to_be_bytes());
-        words.push(chain.to_vec());
-        for address in [&domain.registry, &domain.bridge] {
-            let mut word = [0u8; 32];
-            word[12..].copy_from_slice(&decode::<20>(address)?);
-            words.push(word.to_vec());
-        }
-        words.push(decode::<32>(&public.vault_id)?.to_vec());
-        for address in [&public.signing_key, &public.decrypt_key] {
-            let mut word = [0u8; 32];
-            word[12..].copy_from_slice(&decode::<20>(address)?);
-            words.push(word.to_vec());
-        }
-        words.push(decode::<32>(&public.tls_key_hash)?.to_vec());
-        words.push(decode::<32>(&public.auth_key_hash)?.to_vec());
-        let mut policy = [0u8; 32];
-        policy[24..].copy_from_slice(&domain.policy_version.to_be_bytes());
-        words.push(policy.to_vec());
-        words.push(challenge.to_vec());
-        Ok(Keccak256::digest(words.concat()).into())
+    /// Discovery-only evidence: never accepted by the contract's mint binding.
+    pub fn identity_binding(&self, domain: &BindingDomain, nonce: [u8; 32]) -> Result<[u8; 32]> {
+        self.binding(domain, IDENTITY_TYPE, nonce)
     }
-    pub fn attest(&self, domain: &BindingDomain, challenge: [u8; 32]) -> Result<Vec<u8>> {
+
+    pub fn mint_binding(
+        &self,
+        domain: &BindingDomain,
+        request: &zz_zama::mint::Mint,
+    ) -> Result<[u8; 32]> {
+        let digest = zz_zama::mint::mint_digest(&self.mint_domain(domain)?, request)
+            .map_err(anyhow::Error::msg)?;
+        self.binding(domain, MINT_TYPE, digest.0)
+    }
+
+    fn mint_domain(&self, domain: &BindingDomain) -> Result<zz_core::Domain> {
+        Ok(zz_core::Domain {
+            chain_id: domain.chain_id,
+            bridge: decode::<20>(&domain.bridge)?,
+            vault: zz_core::Id(decode::<32>(&self.public()?.vault_id)?),
+        })
+    }
+
+    /// Internal only: call after verified deposit eligibility and durable signing authorization.
+    /// There is deliberately no HTTP route until the authenticated chain/operation loop is implemented.
+    #[allow(dead_code)]
+    pub(crate) fn attest_mint(
+        &self,
+        domain: &BindingDomain,
+        request: &zz_zama::mint::Mint,
+        signature: &[u8],
+    ) -> Result<Vec<u8>> {
+        zz_zama::mint::verify_mint_signature(&self.mint_domain(domain)?, request, signature)
+            .map_err(anyhow::Error::msg)?;
         attest(
             &decode::<64>(&self.public()?.public_key)?,
-            &self.binding(domain, challenge)?,
-            &challenge,
+            &self.mint_binding(domain, request)?,
+            &request.nonce.to_be_bytes::<32>(),
+        )
+    }
+
+    fn binding(
+        &self,
+        domain: &BindingDomain,
+        type_name: &str,
+        commitment: [u8; 32],
+    ) -> Result<[u8; 32]> {
+        binding_digest(&self.public()?, domain, type_name, commitment)
+    }
+    pub fn attest_identity(&self, domain: &BindingDomain, nonce: [u8; 32]) -> Result<Vec<u8>> {
+        attest(
+            &decode::<64>(&self.public()?.public_key)?,
+            &self.identity_binding(domain, nonce)?,
+            &nonce,
         )
     }
 }
+fn binding_digest(
+    public: &PublicIdentity,
+    domain: &BindingDomain,
+    type_name: &str,
+    commitment: [u8; 32],
+) -> Result<[u8; 32]> {
+    let mut words = vec![Keccak256::digest(type_name.as_bytes()).to_vec()];
+    let mut chain = [0u8; 32];
+    chain[24..].copy_from_slice(&domain.chain_id.to_be_bytes());
+    words.push(chain.to_vec());
+    for address in [&domain.registry, &domain.bridge] {
+        let mut word = [0u8; 32];
+        word[12..].copy_from_slice(&decode::<20>(address)?);
+        words.push(word.to_vec());
+    }
+    words.push(decode::<32>(&public.vault_id)?.to_vec());
+    for address in [&public.signing_key, &public.decrypt_key] {
+        let mut word = [0u8; 32];
+        word[12..].copy_from_slice(&decode::<20>(address)?);
+        words.push(word.to_vec());
+    }
+    words.push(decode::<32>(&public.tls_key_hash)?.to_vec());
+    words.push(decode::<32>(&public.auth_key_hash)?.to_vec());
+    let mut policy = [0u8; 32];
+    policy[24..].copy_from_slice(&domain.policy_version.to_be_bytes());
+    words.push(policy.to_vec());
+    words.push(commitment.to_vec());
+    Ok(Keccak256::digest(words.concat()).into())
+}
+
 impl Drop for Identity {
     fn drop(&mut self) {
         use zeroize::Zeroize;
@@ -201,7 +257,7 @@ impl Drop for Identity {
         self.tls.zeroize();
     }
 }
-/// No mock document is ever returned. Native development cannot enroll in a registry.
+/// No mock document is ever returned. Native development cannot produce Nitro proof evidence.
 pub fn attest(public_key: &[u8], user_data: &[u8], nonce: &[u8]) -> Result<Vec<u8>> {
     ensure!(
         !public_key.is_empty()
@@ -239,6 +295,42 @@ pub fn attest(public_key: &[u8], user_data: &[u8], nonce: &[u8]) -> Result<Vec<u
 mod tests {
     use super::*;
     #[test]
+    fn mint_binding_matches_ethers_vector_and_separates_discovery() {
+        let v: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/test/fixtures/mint-binding-v1.json"
+        ))
+        .unwrap();
+        let public: PublicIdentity = serde_json::from_value(v["identity"].clone()).unwrap();
+        let domain: BindingDomain = serde_json::from_value(v["bindingDomain"].clone()).unwrap();
+        let digest = decode::<32>(v["mintDigest"].as_str().unwrap()).unwrap();
+        let binding = binding_digest(&public, &domain, MINT_TYPE, digest).unwrap();
+        assert_eq!(
+            binding,
+            decode::<32>(v["userData"].as_str().unwrap()).unwrap()
+        );
+        assert_ne!(
+            binding,
+            binding_digest(&public, &domain, IDENTITY_TYPE, digest).unwrap()
+        );
+        let id = Identity::generate().unwrap();
+        let mut request = zz_zama::mint::Mint {
+            vaultId: decode::<32>(&id.public().unwrap().vault_id).unwrap().into(),
+            depositId: [0x33; 32].into(),
+            recipient: [0x44; 20].into(),
+            amountHandle: [0x55; 32].into(),
+            inputProofHash: [0x66; 32].into(),
+            nonce: "7".parse().unwrap(),
+            deadline: 123,
+        };
+        let original = id.mint_binding(&domain, &request).unwrap();
+        request.nonce += request.nonce;
+        assert_ne!(original, id.mint_binding(&domain, &request).unwrap());
+        request.vaultId = [0; 32].into();
+        assert!(id.mint_binding(&domain, &request).is_err());
+        assert!(id.attest_mint(&domain, &request, &[0; 65]).is_err());
+    }
+
+    #[test]
     fn key_bundle_and_domain_binding() {
         let id = Identity::generate().unwrap();
         let other = Identity::generate().unwrap();
@@ -251,11 +343,11 @@ mod tests {
         let public = id.public().unwrap();
         assert_eq!(hex::decode(&public.public_key).unwrap().len(), 64);
         assert_eq!(&public.vault_id[24..], public.signing_key);
-        let a = id.binding(&domain, [3; 32]).unwrap();
-        assert_ne!(a, id.binding(&domain, [4; 32]).unwrap());
-        assert_ne!(a, other.binding(&domain, [3; 32]).unwrap());
+        let a = id.identity_binding(&domain, [3; 32]).unwrap();
+        assert_ne!(a, id.identity_binding(&domain, [4; 32]).unwrap());
+        assert_ne!(a, other.identity_binding(&domain, [3; 32]).unwrap());
         domain.chain_id += 1;
-        assert_ne!(a, id.binding(&domain, [3; 32]).unwrap());
+        assert_ne!(a, id.identity_binding(&domain, [3; 32]).unwrap());
         let cert_key = id
             .certificate()
             .unwrap()

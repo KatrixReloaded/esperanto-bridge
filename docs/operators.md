@@ -1,12 +1,12 @@
 # Nitro operator runbook
 
-This is a locally tested foundation, not a deployed or usable bridge. AWS account activation is pending. No AWS resources were provisioned. The runtime deliberately reports `bridge_actions_enabled:false`: authenticated chain verification, deposit/payout orchestration, independent payout fencing and live FHE/proof integration are release gates. Never fund these vaults yet.
+This is a locally tested foundation, not a deployed or usable bridge. The operator will configure the available AWS account. No AWS account was accessed or resources provisioned here, and Nitro hardware validation remains pending. The runtime deliberately reports `bridge_actions_enabled:false`: authenticated chain verification, deposit/payout orchestration, independent payout fencing and live FHE/proof integration are release gates. Never fund these vaults yet.
 
 ## Boundary and keys
 
 The one EIF contains `zz-monero`, `zz-zama`, `zz-core`, `zz-watcher` and the real `@zama-fhe/sdk` sidecar. It creates the Monero spend key and separate secp256k1 mint/decryption, Ed25519 authentication and P-256 TLS keys internally. The sidecar listens only on enclave loopback `127.0.0.1:8788`. Do not forward that port. The parent only forwards public TLS bytes, outbound HTTPS/CONNECT bytes and encrypted storage. It can deny service, replay old ciphertext, clone restored instances and manipulate unauthenticated chain responses.
 
-Registry attestation uses raw64 secp256k1 `public_key`, challenge raw32 `nonce`, and raw32 application binding digest `user_data`. `tlsKeyHash` is SHA256 of the TLS SPKI DER; authentication hash is SHA256 of raw32 Ed25519 public key. The exact ABI encoding is in [contracts/INTERFACES.md](../contracts/INTERFACES.md). Native mode returns no NSM evidence and cannot register.
+Per-mint Nitro attestation uses raw64 secp256k1 `public_key`, the mint nonce as raw32 big-endian `nonce`, and a raw32 digest committing to the entire mint request and key bundle as `user_data`. `tlsKeyHash` is SHA256 of the TLS SPKI DER; authentication hash is SHA256 of raw32 Ed25519 public key. The exact ABI encoding is in [contracts/INTERFACES.md](../contracts/INTERFACES.md). Native mode returns no NSM evidence and cannot produce mint evidence.
 
 KMS recovery uses a **separate fresh RSA-2048 SPKI DER recipient** NSM document. `GenerateDataKey`/`Decrypt` run over authenticated KMS TLS, signed with the parent's temporary IAM credentials, inside the enclave. KMS CMS `CiphertextForRecipient` is unwrapped only inside the enclave. The parent never receives the data key or private key. Runtime uses KMS `GenerateDataKey(Recipient)`, never a host-generated key plus `Encrypt`.
 
@@ -63,24 +63,24 @@ Traffic map: parent TCP8443 → enclave vsock8443 → TLS127.0.0.1:8443; enclave
 
 A new bootstrap must persist/read back the encrypted envelope before publishing the identity. Once bootstrap succeeds, record its vaultId independently. Set `initialize=false` before any funded release and rebuild/reapprove the resulting measured config; include both approved images in a deliberate KMS migration window if needed. Otherwise a malicious parent returning 404 can trigger a different fresh identity. It cannot recreate the old key or satisfy an existing client's old TLS pin, but it can confuse an unpinned operator. Expected-vault identity fencing is still a release gate.
 
-## Attest, register and authenticate the TLS peer
+## Per-mint proof and TLS discovery
 
-Before enrollment the only public routes are `/identity`, `/health`, and `/attestation?challenge=HEX32`. They perform no deposit, mint, decryption, claim or payout action. `/health` reports the disabled gates explicitly. A self-signed certificate or successful HTTPS request alone is **not RA-TLS**.
+The public runtime routes are `/identity`, `/health`, and `/attestation?nonce=HEX32`. They perform no deposit, mint, decryption, claim or payout action. The attestation route emits **identity-discovery-only** evidence with `CWXMRNitroIdentityBinding`, using a fresh client-generated nonce and the enclave's own key bundle. Its digest is incompatible with `CWXMRNitroMintBinding` and cannot authorize issuance. `/health` reports disabled gates explicitly. A self-signed certificate or successful HTTPS request alone is not RA-TLS.
 
-1. Fetch public identity provisionally. Compare expected identity/recovery records; do not send secrets.
-2. On VaultRegistry call `issueChallenge(vaultId,salt)` with the account that will submit `attest`; read `ChallengeIssued`. Challenges expire after 600 seconds.
-3. Fetch `/attestation?challenge=<exact onchain raw32 challenge>` through TLS. The initial document fetch may use an untrusted self-signed connection because it contains only public evidence; treat all fields as unverified until the next step.
-4. Use the pinned Automata revision `65c4a4233029ea3bbe16110a80731fcfd47cf300` prover (SP1/RISC0 selected and independently pinned by deployment) to prove that exact NSM document. Configure the actual proof verifier/program/root/prefix policy and submit authenticated output/proof to `VaultRegistry.attest` with the exact key bundle/version/challenge. Existing interface pins are documented in contracts; automatic prover packaging/submission and a live document/proof roundtrip are **pending**, not simulated by an operator registration path.
-5. Verify finalized registration/current authorization, PCR policy and expiry. For a registered peer, the provided client reads current authorization at an independently trusted finalized block, validates pinned registry bytecode and compares the live TLS SPKI before sending its HTTP request:
+For first discovery, provisionally fetch the public identity without sending secrets; compare independent recovery/identity records. An independent verifier must validate the fresh AWS-signed Nitro document, exact discovery domain/nonce/key bundle, allowed nonzero PCRs, timestamp and live TLS SPKI possession. The integrated bootstrap verifier/client is still missing; the directory-based client below cannot bootstrap a brand-new vault. Do not treat the unverified endpoint's claimed TLS hash as a trust anchor.
+
+After authenticated Monero deposit eligibility is implemented, the enclave will authorize the exact canonical mint request, then internally request its mint-bound NSM document. There is no public mint-attestation or signing oracle. Prove that exact document with pinned Automata revision `65c4a4233029ea3bbe16110a80731fcfd47cf300` using the approved SP1/RISC0 deployment pins. Submit authorization, input proof, signature and Nitro evidence in one `Bridge.confidentialMint` transaction. Each call verifies the proof before issuing tokens. The first successful transaction also inserts immutable directory keys; no enrollment or renewal transaction exists. Prover packaging, real NSM proof roundtrip and transaction orchestration remain pending. Reconcile actual encrypted issuance: directory membership or receipt success does not prove positive issuance or liquidity.
+
+For a peer already discovered by a proven mint, the client reads current authorization at an independently trusted finalized block, checks pinned registry bytecode and live TLS SPKI before sending its request:
 
 ```sh
 npm ci --prefix sidecar --ignore-scripts
 node scripts/nitro/verify-peer.mjs "$HTTPS_RPC" "$CHAIN_ID" "$REGISTRY" "$REGISTRY_CODEHASH" "$VAULT_ID" "$TRUSTED_FINALIZED_BLOCK_HASH" https://127.0.0.1:8443
 ```
 
-This client authenticates possession of the TLS private key enrolled by Automata; it fails on changed keys, inactive/expired registry entries, wrong chain/code hash or stale block time. It trusts configured RPC state and the supplied finalized block; RPC/header consistency is not Ethereum consensus authentication. Runtime/browser peer authentication and fresh on-demand COSE verification are still integration work. Never obtain a TLS pin solely from the same untrusted endpoint and call that remote attestation.
+This checks possession of the immutable TLS key first bound by Automata, current lifecycle/policy and verifier pins, not fresh enclave liveness. Directory authority has no time-based expiry. Wrong keys, inactive/policy-disabled records, wrong chain/code hash and stale state fail closed. Configured RPC and finalized block are trust inputs; consistency is not Ethereum consensus authentication. Runtime/browser peer authentication and fresh on-demand document verification remain integration work.
 
-Renew attestation before the registry's 86400-second expiry using a fresh registry challenge. Rebuild/policy updates must preserve the same recovered key bundle if refreshing a vault. Refresh cannot reactivate a suspended/revoked/retired vault. No CLI exports or accepts a production authority private key.
+Restores preserve the same key bundle. A new approved image/policy can be recorded through a fresh mint proof from an Active identity; keys remain immutable for snapshot ACL safety. Draining can settle existing assignments without renewal, but cannot mint or claim. Suspended, Revoked and Retired identities cannot reactivate through a proof. No CLI exports or accepts a production authority private key.
 
 ## Backup, restore, drain and cleanup
 
@@ -114,6 +114,6 @@ python3 scripts/nitro/test-local.py
 
 Set `NODE_BIN` if Node is not on PATH, and `WATCHER_BIN` if using a custom Cargo target directory. These tests start a temporary native TLS server with bridge actions disabled. Local tests do not provide Nitro evidence.
 
-Remaining hardware work: actual amd64 container/EIF builds and independent matching hashes/PCRs; allocator/CPU/RAM viability; real NSM and non-debug policy; IAM/KMS recipient roundtrip/denial tests; encrypted restart/restore; SDK proxy/native-library compatibility; real Automata proof + registry enrollment; browser/peer client integration; independently authenticated Ethereum/Monero chain data; durable orchestration and rollback-resistant payout fencing. Full bridge workflows remain disabled until those gates pass.
+Remaining hardware work: actual amd64 container/EIF builds and independent matching hashes/PCRs; allocator/CPU/RAM viability; real NSM and non-debug policy; IAM/KMS recipient roundtrip/denial tests; encrypted restart/restore; SDK proxy/native-library compatibility; real request-bound Automata proof + atomic first mint; browser/peer client integration; independently authenticated Ethereum/Monero chain data; durable orchestration and rollback-resistant payout fencing. Full bridge workflows remain disabled until those gates pass.
 
 Primary references: [AWS enclave architecture](https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave.html), [AWS measurements](https://docs.aws.amazon.com/enclaves/latest/user/set-up-attestation.html), [KMS attested calls](https://docs.aws.amazon.com/kms/latest/developerguide/attested-calls.html), [KMS Decrypt recipient API](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html), [NSM API](https://github.com/aws/aws-nitro-enclaves-nsm-api), [Node proxy support](https://nodejs.org/learn/http/enterprise-network-configuration).

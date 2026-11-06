@@ -14,7 +14,7 @@ python3 scripts/nitro/forward.py vsock-tcp --listen 8444 --target 8081 & cwxmr_c
 python3 scripts/nitro/forward.py vsock-tcp --listen 8445 --host "kms.$cwxmr_region.amazonaws.com" --target 443 & cwxmr_children+=("$!")
 python3 scripts/nitro/forward.py connect-proxy --listen 8889 --allow "$cwxmr_allow" & cwxmr_children+=("$!")
 python3 scripts/nitro/forward.py vsock-tcp --listen 8888 --target 8889 & cwxmr_children+=("$!")
-# Loopback listener; expose through a raw TCP load balancer only after enrollment.
+# Loopback listener; expose through a raw TCP load balancer only after independent fresh peer authentication.
 python3 scripts/nitro/forward.py tcp-vsock --listen 8443 --cid 16 --target 8443 & cwxmr_children+=("$!")
 # Linux bash: any forwarding failure stops this transport group; never claim the enclave is healthy.
 wait -n

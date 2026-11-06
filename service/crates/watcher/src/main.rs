@@ -120,15 +120,15 @@ fn serve(identity: Identity, domain: BindingDomain, port: u16, native: bool) -> 
         } else if path == "GET /identity HTTP/1.1" {
             ("200 OK", serde_json::to_value(identity.public()?)?)
         } else if let Some(nonce) = path
-            .strip_prefix("GET /attestation?challenge=")
+            .strip_prefix("GET /attestation?nonce=")
             .and_then(|p| p.strip_suffix(" HTTP/1.1"))
         {
             let result = attestation::decode::<32>(nonce)
-                .and_then(|challenge| Ok((challenge, identity.attest(&domain, challenge)?)));
+                .and_then(|nonce| Ok((nonce, identity.attest_identity(&domain, nonce)?)));
             match result {
-                Ok((challenge, document)) => (
+                Ok((nonce, document)) => (
                     "200 OK",
-                    json!({"document":STANDARD.encode(document),"identity":identity.public()?,"nonce":hex::encode(challenge),"user_data":hex::encode(identity.binding(&domain,challenge)?)}),
+                    json!({"purpose":"identity-discovery-only","document":STANDARD.encode(document),"identity":identity.public()?,"nonce":hex::encode(nonce),"user_data":hex::encode(identity.identity_binding(&domain,nonce)?)}),
                 ),
                 Err(_) => (
                     "503 Service Unavailable",

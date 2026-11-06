@@ -11,8 +11,8 @@ Build a bidirectional, private-to-private bridge between native Monero (XMR) and
 - **Ethereum → Monero:** a user burns cwXMR and supplies an encrypted Monero destination. Eligible vault enclaves decrypt the redemption details, check their available funds, and compete to claim the request. The first valid claim accepted on Ethereum assigns the payout to one vault.
 - Each vault owns an independent Monero wallet. There is no shared master spend key or threshold custody in the initial version.
 - Multiple instances of the approved enclave build may operate independently.
-- **The initial release targets AWS Nitro Enclaves only**, using approved enclave image PCR measurements. AWS account activation is currently unresolved; implementation starts locally and real Nitro validation will use an authorized AWS account when available. Trial credits and instance eligibility must be checked in that account. SGX, TDX, and SEV-SNP support are outside the MVP.
-- **An enclave must be validated through Automata's Nitro verifier contract before its signing key receives any cwXMR minting authority.** This replaces the earlier DCAP requirement: the existing Intel DCAP adapter cannot verify Nitro evidence. Peer attestation or an operator's assertion cannot substitute for onchain verification.
+- **The initial release targets AWS Nitro Enclaves only**, using approved enclave image PCR measurements. An AWS account is available for operator setup; no account access, provisioning or real Nitro validation has occurred in this implementation. Trial credits and instance eligibility must be checked in that account. SGX, TDX, and SEV-SNP support are outside the MVP.
+- **Every deposit `confidentialMint` must verify a request-bound proof through Automata's Nitro verifier in the same transaction before issuing cwXMR.** This replaces the earlier DCAP requirement: the existing Intel DCAP adapter cannot verify Nitro evidence. Peer attestation or an operator's assertion cannot substitute for onchain verification.
 - The Rust backend consists of four crates: Monero, Zama, core, and watcher. All four must support execution in the selected TEE environment. The watcher provides RA-TLS communication.
 - Reuse the existing zz-bridge service and web application as foundations, adapting their Zcash and single-operator assumptions as described in sections 14–15.
 
@@ -41,7 +41,7 @@ ERC-7984 defines a confidential-token interface, not a complete bridge, anonymit
 
 ### On Ethereum
 
-1. **VaultRegistry:** verified enclave identities, signing keys, vault lifecycle, attestation policy versions, expiry, and revocation.
+1. **VaultRegistry:** verified enclave identities, signing keys, vault lifecycle, attestation policy versions and revocation; entries are populated by the first proven mint.
 2. **Bridge:** deposit replay protection, mint authorization, redemption creation, eligibility snapshots, assignment, and settlement records.
 3. **cwXMR:** confidential balances, supply accounting, minting, and burning using Zama's Solidity FHE library.
 4. **Automata Nitro verifier:** verifies proofs of AWS Nitro attestation documents through the configured deployed verifier contract.
@@ -67,33 +67,22 @@ An untrusted host can stop or delay execution. Enclaves must fail closed when ch
 
 ## 4. Mandatory Automata Nitro mint gate
 
-### Enrollment
-
-1. Start an approved production enclave build.
-2. Generate the vault's Monero wallet and separate enclave authentication, mint-signing, RA-TLS, and decryption keys inside the enclave.
-3. Request an AWS Nitro attestation document through the enclave's Nitro Secure Module (NSM), binding a domain-separated digest of the enclave-generated identity/key bundle, bridge deployment, Ethereum chain ID, policy version, and fresh registration challenge into its authenticated public_key/user_data/nonce fields under a versioned encoding.
-4. Generate an Automata-supported SP1 or RISC Zero proof of the document's verification, then submit that proof, authenticated outputs and registration data through VaultRegistry. Proof generation may run outside the enclave on the public attestation document; no wallet key or bridge plaintext is needed by the prover.
-5. VaultRegistry invokes the configured Automata Nitro verifier and consumes its authenticated verification result. Pin the prover program identity, output schema and verifier contracts; do not accept caller-supplied PCRs or key bindings without matching verified outputs.
-6. Enforce bridge-specific policy: approved PCR0/PCR1/PCR2 tuple, valid AWS attestation certificate chain under the verifier's policy, non-debug measurements, document freshness, challenge freshness and single use, expected domain, and exact binding to the submitted keys. Check that all policy fields are authenticated and exposed by the pinned verifier integration before enabling registration.
-7. Activate the identity only if all required verification and admission checks succeed.
-
-Automata verification is mandatory, but document validity alone is not sufficient: the document must attest the exact build and keys this bridge intends to trust. The measured code must generate and retain those keys internally; attestation alone does not prove key provenance if the code accepts arbitrary host keys. Automata provides Nitro attestation proof generation and verification; the bridge provides application policy. Its repository lists a Sepolia verifier deployment, whose address, code, proof backend and ABI must be verified and pinned during implementation. [Automata Nitro SDK and contracts](https://github.com/automata-network/aws-nitro-enclave-attestation)
-
-PCR0 measures the enclave image, PCR1 the kernel/bootstrap and PCR2 the application. Do not require a single global PCR3 (parent IAM role) or PCR4 (parent instance), which would prevent independent-account deployment. Those values may be used in a particular operator's recovery policy. PCR8 signer identity is optional and must not silently permit arbitrary replacement images. Reject debug/attached-console enclaves with zero measurements. [AWS Nitro measurements](https://docs.aws.amazon.com/enclaves/latest/user/set-up-attestation.html)
-
 ### Every mint
 
-Bridge verifies:
+1. Start an approved production enclave and generate separate wallet, authentication, mint-signing, RA-TLS and decryption keys inside it. Discover new peers through independently verified fresh Nitro identity evidence, not a registration transaction.
+2. After independently verifying a deposit and persisting its recipient binding, prepare the canonical EIP-712 mint authorization: chain/Bridge domain, vaultId, depositId, recipient, encrypted amount handle, input-proof hash, nonce and deadline. Sign with the enclave key.
+3. Request an NSM document binding this entire authorization digest, immutable key bundle and policy version in `user_data`; `public_key` is the raw64 signer and `nonce` is the raw32 mint nonce. Discovery evidence has a distinct typehash and cannot mint.
+4. Generate the pinned Automata SP1/RISC0 proof of that document. Proof generation may occur outside the enclave on the public document. Submit all evidence with the signature and FHE input in `Bridge.confidentialMint`.
+5. Within that call, the Bridge-only directory verification method invokes the pinned Nitro adapter. Enforce approved nonzero PCR0/1/2, verified certificate/root/program policy, document freshness, exact request/domain/key binding and signature consistency. Require unused global deposit ID and per-vault nonce.
+6. Only after success, perform confidential issuance and atomically persist the actual amount, replay markers and directory keys. Failed proof or FHE checks revert everything. First successful verification inserts the immutable key bundle; directory insertion does not imply positive actual issuance or Monero liquidity.
 
-- A valid signature by the registered enclave mint-signing key.
-- Successful prior Automata enrollment and current mint-authorized status.
-- Current attestation validity/policy and no suspension or revocation.
-- Correct bridge, chain, vault identity, recipient, confidential amount handles/input proof binding, and authorization nonce.
-- A globally unused deposit identifier.
+There is no enrollment, registration challenge or renewal transaction. Every mint verifies its own evidence, including repeat mints from the same vault. Existing Active identities retain immutable keys, but a fresh mint proof may update an approved image tuple/policy. Suspension/revocation/retirement cannot be undone by evidence. Withdrawal signatures use the proof-populated directory's current lifecycle, policy and verifier pins without a timed re-attestation requirement. Draining permits only assigned settlement. Snapshot ACLs and first-valid-claim arbitration are unchanged. Cancellation restores a reserved prior burn exactly once and is not a new Monero-backed deposit mint.
 
-The contract consumes the identifier and performs the mint atomically. Any relayer may submit the authorization; its Ethereum account does not receive mint authority.
+Automata verifies Nitro evidence; the bridge enforces application policy. Measured code must generate and retain its keys internally and refuse a host-controlled signing or mint-attestation oracle. The public runtime currently exposes only discovery evidence; internal mint attestation requires a matching authorization signature and remains unwired until authenticated deposit processing exists. Bootstrap peer verification, live document proving and the integrated mint workflow remain release gates. [Automata Nitro SDK and contracts](https://github.com/automata-network/aws-nitro-enclave-attestation)
 
-Re-attestation is required before the configured authorization expires. Expiry blocks new actions under the defined policy. Draining vaults need an explicit, limited path for processing previously issued deposit addresses and pending work; they do not retain general mint authority indefinitely. The current contracts prohibit all minting while draining and permit authorized settlement only. Late-deposit handling therefore remains a deployment gate; do not enable draining with unresolved deposit obligations.
+PCR0 measures the enclave image, PCR1 the kernel/bootstrap and PCR2 the application. Do not require a global PCR3 (parent IAM role) or PCR4 (parent instance), which would prevent independent-account deployment. These may appear in an operator's recovery policy. PCR8 signer identity must not silently permit arbitrary replacement images. Reject debug/attached-console enclaves with zero measurements. [AWS Nitro measurements](https://docs.aws.amazon.com/enclaves/latest/user/set-up-attestation.html)
+
+Late-deposit handling during draining remains a deployment gate; do not enable draining with unresolved deposit obligations. No relay account or governance role can bypass the proof to mint.
 
 The same approved PCR tuple does not demonstrate independent ownership or prevent one operator from running many instances. Admission limits and economic protections are separate decisions. No particular centralized operator approval process is assumed by this plan.
 
@@ -223,7 +212,7 @@ Independent custody limits a stolen spend key to that vault's funds, but unrestr
 
 ## 9. Vault lifecycle
 
-Lifecycle: REGISTERING → ACTIVE → DRAINING → RETIRED, with SUSPENDED available for incident handling.
+Lifecycle: absent → ACTIVE after the first proven mint → DRAINING → RETIRED, with SUSPENDED and terminal REVOKED states for incident handling.
 
 - **Join:** create keys inside the enclave, pass mandatory onchain Automata verification and bridge policy, then activate. No key resharing is needed.
 - **Operate:** issue deposit subaddresses, mint verified deposits, and claim/payout eligible redemptions.
@@ -300,12 +289,12 @@ Start in xmr-bridge/contracts with the reusable CWZEC accounting and registry pa
 Implement in this order:
 
 1. **CWXMR token:** name/symbol, 12-decimal representation and explicit euint64 capacity bounds; preserve actual-result accounting, pending-burn capacity reservations and exactly-once recredit behavior. Establish Bridge as the sole mint authority with no admin mint bypass.
-2. **Nitro attestation adapter and VaultRegistry:** consume authenticated Automata outputs, enforce approved PCR tuples, key/domain binding, fresh challenges, expiry, refresh, revocation and lifecycle. Keep mock verification exclusively in local test fixtures and separate deployment scripts.
-3. **Bridge mint path:** domain-separated enclave signatures, recipient/ciphertext binding, registry authorization and globally consumed deposit IDs.
+2. **Nitro attestation adapter and VaultRegistry:** consume authenticated Automata outputs, enforce approved PCR tuples, key/domain binding, per-mint request binding, document freshness, immutable keys, revocation and lifecycle. Keep mock verification exclusively in local test fixtures and separate deployment scripts.
+3. **Bridge mint path:** domain-separated enclave signatures, recipient/ciphertext binding, mandatory in-transaction Nitro proof verification and globally consumed deposit IDs.
 4. **Bridge redemption path:** actual burned entitlement, bounded eligible-vault ACL snapshot, encrypted destination encoding, first-valid-claim assignment, assignee-only settlement and cancellation only while unassigned. Validate Zama caller/contract/input-proof domains across the Bridge/token boundary.
 5. **Deployment and bindings:** deterministic configuration, ABI exports and scripts that check chain ID, verifier code/configuration, token permissions and registry policy. Production/testnet scripts must reject mock verifiers and bypass roles.
 
-Acceptance: unregistered/revoked/expired keys cannot mint; invalid, stale, replayed, zero-PCR or incorrectly bound attestations cannot register; duplicate deposits cannot mint twice; racing claims/cancellation choose one state transition; settlement requires the assignee; zero/insufficient burns cannot create excess entitlement; confidential supply limits and refunds preserve accounting.
+Acceptance: no mint can bypass Nitro verification; revoked/suspended/draining identities cannot mint; invalid, stale, replayed, zero-PCR or incorrectly bound attestations cannot mint or insert directory keys; duplicate deposits cannot mint twice; racing claims/cancellation choose one state transition; settlement requires the assignee; zero/insufficient burns cannot create excess entitlement; confidential supply limits and refunds preserve accounting.
 
 Local contract tests may use Zama's supported local testing environment and a mock at the attestation adapter boundary. Add upstream genuine proof fixtures if available and compatible, including negative cases. Mock success is not end-to-end attestation validation. Keep real Sepolia deployment and real proof verification as explicit gates in phase 2.
 
@@ -313,19 +302,19 @@ Local contract tests may use Zama's supported local testing environment and a mo
 
 Scaffold zz-core, zz-monero, zz-zama and zz-watcher; extract reusable journal/domain interfaces. Build one pinned enclave image containing the backend and any secret-processing Zama sidecar. Add NSM attestation, vsock forwarding, enclave-terminated TLS and KMS-wrapped encrypted persistence. Keep the host launcher/proxies outside the secret-processing backend.
 
-Local work can include crate compilation, state-machine tests, a dev container, deterministic payload encoding, transport abstractions, image build scripts, infrastructure templates and operator documentation. Dev mode must use separate contracts/configuration and never masquerade as a registered Nitro vault.
+Local work can include crate compilation, state-machine tests, a dev container, deterministic payload encoding, transport abstractions, image build scripts, infrastructure templates and operator documentation. Dev mode must use separate contracts/configuration and never masquerade as a proven Nitro vault.
 
-When authorized AWS access is available, prove: production EIF boot → enclave-generated identity → bound attestation → Automata proof → Sepolia registry activation → enclave-authorized mint using a test fixture → restart and safe identity recovery. Also prove encrypted input generation and enclave-only Zama decryption over the actual network forwarding path. These checks precede an integrated bridge demonstration.
+When authorized AWS access is available, prove: production EIF boot → enclave-generated identity → bound attestation → Automata proof → Sepolia per-mint verification and first-mint directory insertion using a test fixture → restart and safe identity recovery. Also prove encrypted input generation and enclave-only Zama decryption over the actual network forwarding path. These checks precede an integrated bridge demonstration.
 
 Provide an operator package with:
 
 - A pinned release/image digest, reproducible build instructions and expected PCR measurements; build provenance and upgrade policy.
 - Infrastructure scripts for a supported EC2 instance, enclave allocator, least-privilege IAM, per-operator KMS key/policy, encrypted backup location and network forwarding.
 - Prerequisite checks for instance support, account quota, enclave memory/CPU, NSM, chain endpoints, proof-generation access and KMS recovery permissions.
-- Commands/runbooks to configure, launch, attest/register, inspect health, back up, restore, drain and stop; clear resource cleanup and billing guidance.
+- Commands/runbooks to configure, launch, prove each mint, authenticate peers, inspect health, back up, restore, drain and stop; clear resource cleanup and billing guidance.
 - Documentation for an independent AWS account. Use delegated IAM access or an assumed role when using another person's account, rather than shared root credentials. Account-specific role/instance PCRs must not become a global registry requirement.
 
-Acceptance: wrong-image/debug evidence cannot register or recover secrets; the normal host principal cannot obtain plaintext data keys; TLS/plaintext processing remains in the enclave; restarting restores the same vault safely; a second operator can follow the instructions without maintainer-held secrets. Validate simultaneous and stale restores before enabling payout execution.
+Acceptance: wrong-image/debug evidence cannot mint or recover secrets; the normal host principal cannot obtain plaintext data keys; TLS/plaintext processing remains in the enclave; restarting restores the same vault safely; a second operator can follow the instructions without maintainer-held secrets. Validate simultaneous and stale restores before enabling payout execution.
 
 ### Phase 3: Deposit path
 
@@ -358,7 +347,7 @@ Acceptance: verify backing and unpaid liabilities across the entire scenario, en
 These are unresolved engineering choices, not completed guarantees:
 
 1. Pinned Nitro Linux/EIF build, instance sizing, reproducible PCR process and upgrade authorization.
-2. Automata Nitro revision/address and proof backend, authenticated output schema, certificate/root policy, proof cost, attestation lifetime and refresh rules.
+2. Automata Nitro revision/address and proof backend, authenticated output schema, certificate/root policy, proof cost, document freshness and per-mint request-binding rules.
 3. Authenticated Ethereum finality/freshness and Monero chain-verification strategy.
 4. Zama Rust/FFI integration, amount representation, destination encoding and proof/ACL compatibility.
 5. Rollback-resistant payout fencing and recoverable transaction storage.
@@ -418,8 +407,8 @@ Build a Nitro-specific adapter against the pinned [Automata Nitro contracts](htt
 Remodel [AttestedAllocatorRegistry.sol](/Users/katrixrldd/Desktop/Work/CatalogRepos/new-evm-arch/evm-htlc-temp/src/AttestedAllocatorRegistry.sol:86):
 
 - Remove ownerRegister(), which deliberately creates an active identity without attestation.
-- Extend the current public-key-hash report binding with bridge/chain domain, policy and fresh challenge. Update Nitro document generation, proof output decoding and registry validation together.
-- Add expiry and refresh without letting refresh undo an explicit suspension or revocation.
+- Extend the current public-key-hash report binding with bridge/chain domain, policy and the complete canonical mint request. Update Nitro document generation, proof output decoding and registry validation together.
+- Remove standalone registration and renewal; populate the immutable key directory atomically from a proven mint without undoing an explicit suspension or revocation.
 - Recheck current measurement policy when authorizing actions; the current isActive() only returns a stored boolean, and removing an allowed measurement leaves existing records active.
 - Add active/draining/retired lifecycle and action-specific completion rules.
 - Enforce approved nonzero PCR measurements and reject debug evidence in the verified path. Replace the old SGX measurement/report-data/TCB return structure with the authenticated Nitro output schema.

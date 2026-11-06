@@ -7,6 +7,7 @@ contract MockNitroVerifier {
     bytes32 public program = keccak256("test-program");
     bool public enabled = true;
     address public route;
+    uint256 public verificationCalls;
     constructor() { require(block.chainid == 31337, "LOCAL_ONLY"); route = address(this); }
     function setEnabled(bool value) external { enabled = value; }
     function setRoot(bytes32 value) external { rootCert = value; }
@@ -14,8 +15,9 @@ contract MockNitroVerifier {
     function isVerifierIdSupported(ZkCoProcessorType, bytes32 p) external view returns (bool) { return enabled && p == program; }
     function getZkVerifier(ZkCoProcessorType, bytes4) external view returns (address) { return route; }
     function verifyWithProgramId(bytes calldata output, ZkCoProcessorType, bytes32 p, bytes calldata proof)
-        external view returns (VerifierJournal memory) {
+        external returns (VerifierJournal memory) {
         require(enabled && p == program && keccak256(proof) == keccak256(abi.encodePacked(bytes4(0x12345678), keccak256(output))), "BAD_PROOF");
+        ++verificationCalls;
         return abi.decode(output, (VerifierJournal));
     }
 }

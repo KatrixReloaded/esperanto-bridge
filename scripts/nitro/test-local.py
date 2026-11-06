@@ -102,7 +102,11 @@ import assert from 'node:assert/strict';
 const health=await connectPinned({json.dumps(endpoint)},{json.dumps(pin)});
 assert.equal(health.native_development,true);assert.equal(health.bridge_actions_enabled,false);
 await assert.rejects(connectPinned({json.dumps(endpoint)},'00'.repeat(32)), /TLS key differs/);
+const identity=await connectPinned({json.dumps(endpoint)},{json.dumps(pin)},'/identity');
+assert.equal(identity.tls_key_hash,{json.dumps(pin)});
+await assert.rejects(connectPinned({json.dumps(endpoint)},{json.dumps(pin)},'/attestation?nonce='+'00'.repeat(32)),/peer request rejected/);
 await assert.rejects(connectPinned({json.dumps(endpoint)},{json.dumps(pin)},'/attestation?challenge='+'00'.repeat(32)),/peer request rejected/);
+await assert.rejects(connectPinned({json.dumps(endpoint)},{json.dumps(pin)},'/mint-attestation'),/peer request rejected/);
 """
             result = subprocess.run([node, "--input-type=module", "-"], input=code, capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stderr)

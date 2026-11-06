@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Authenticate a live TLS key using an already Automata-enrolled current registry record.
+// Authenticate a live TLS key using a directory record established by a successful Automata-proven mint.
+// This proves key possession and current directory policy, not fresh attestation of the running image.
 // The configured RPC + finalized block must be independently trusted: this is not an Ethereum light client.
 import { createRequire } from 'node:module';
 import { createHash, X509Certificate } from 'node:crypto';
@@ -64,11 +65,11 @@ async function main() {
   const at = { blockHash, requireCanonical:true };
   if (keccak256(await call('eth_getCode', [registry, at])).toLowerCase() !== codeHash.toLowerCase()) throw Error('registry bytecode pin mismatch');
   const abi = new Interface(['function authorized(bytes32,bool) view returns (bool)',
-    'function vaults(bytes32) view returns (address signingKey,address decryptKey,bytes32 tlsKeyHash,bytes32 authKeyHash,bytes32 pcrTuple,uint64 policyVersion,uint64 expiresAt,uint8 status)']);
+    'function vaults(bytes32) view returns (address signingKey,address decryptKey,bytes32 tlsKeyHash,bytes32 authKeyHash,bytes32 pcrTuple,uint64 policyVersion,uint8 status)']);
   async function read(name, values) { return abi.decodeFunctionResult(name, await call('eth_call',[{to:registry,data:abi.encodeFunctionData(name,values)},at])); }
   if (!(await read('authorized',[vaultId,false]))[0]) throw Error('vault is not currently authorized');
   const record = await read('vaults',[vaultId]);
-  if (record.status !== 1n || record.expiresAt < now) throw Error('vault expired or inactive');
+  if (record.status !== 1n) throw Error('vault inactive');
   const health = await connectPinned(endpoint, record.tlsKeyHash);
   console.log(JSON.stringify({authenticated_tls_key:true,vault_id:vaultId,registry_block:blockHash,health},null,2));
 }

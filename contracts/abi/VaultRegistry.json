@@ -67,37 +67,6 @@
     "inputs": [
       {
         "indexed": true,
-        "internalType": "bytes32",
-        "name": "challenge",
-        "type": "bytes32"
-      },
-      {
-        "indexed": true,
-        "internalType": "bytes32",
-        "name": "vaultId",
-        "type": "bytes32"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "requester",
-        "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint64",
-        "name": "issuedAt",
-        "type": "uint64"
-      }
-    ],
-    "name": "ChallengeIssued",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
         "internalType": "address",
         "name": "previousOwner",
         "type": "address"
@@ -163,15 +132,9 @@
         "internalType": "uint64",
         "name": "policyVersion",
         "type": "uint64"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint64",
-        "name": "expiresAt",
-        "type": "uint64"
       }
     ],
-    "name": "VaultAttested",
+    "name": "VaultDiscovered",
     "type": "event"
   },
   {
@@ -195,38 +158,12 @@
   },
   {
     "inputs": [],
-    "name": "ATTESTATION_LIFETIME",
-    "outputs": [
-      {
-        "internalType": "uint64",
-        "name": "",
-        "type": "uint64"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
     "name": "BINDING_TYPEHASH",
     "outputs": [
       {
         "internalType": "bytes32",
         "name": "",
         "type": "bytes32"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "CHALLENGE_LIFETIME",
-    "outputs": [
-      {
-        "internalType": "uint64",
-        "name": "",
-        "type": "uint64"
       }
     ],
     "stateMutability": "view",
@@ -280,61 +217,6 @@
       }
     ],
     "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes32",
-        "name": "vaultId",
-        "type": "bytes32"
-      },
-      {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "decryptKey",
-            "type": "address"
-          },
-          {
-            "internalType": "bytes32",
-            "name": "tlsKeyHash",
-            "type": "bytes32"
-          },
-          {
-            "internalType": "bytes32",
-            "name": "authKeyHash",
-            "type": "bytes32"
-          }
-        ],
-        "internalType": "struct VaultRegistry.Keys",
-        "name": "keys",
-        "type": "tuple"
-      },
-      {
-        "internalType": "uint64",
-        "name": "version",
-        "type": "uint64"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "challenge",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "bytes",
-        "name": "output",
-        "type": "bytes"
-      },
-      {
-        "internalType": "bytes",
-        "name": "proof",
-        "type": "bytes"
-      }
-    ],
-    "name": "attest",
-    "outputs": [],
-    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -402,7 +284,7 @@
       },
       {
         "internalType": "bytes32",
-        "name": "challenge",
+        "name": "mintDigest",
         "type": "bytes32"
       }
     ],
@@ -434,40 +316,6 @@
     "inputs": [
       {
         "internalType": "bytes32",
-        "name": "",
-        "type": "bytes32"
-      }
-    ],
-    "name": "challenges",
-    "outputs": [
-      {
-        "internalType": "bytes32",
-        "name": "vaultId",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "address",
-        "name": "requester",
-        "type": "address"
-      },
-      {
-        "internalType": "uint64",
-        "name": "issuedAt",
-        "type": "uint64"
-      },
-      {
-        "internalType": "bool",
-        "name": "consumed",
-        "type": "bool"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes32",
         "name": "vaultId",
         "type": "bytes32"
       }
@@ -481,30 +329,6 @@
       }
     ],
     "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes32",
-        "name": "vaultId",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "salt",
-        "type": "bytes32"
-      }
-    ],
-    "name": "issueChallenge",
-    "outputs": [
-      {
-        "internalType": "bytes32",
-        "name": "challenge",
-        "type": "bytes32"
-      }
-    ],
-    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -641,17 +465,79 @@
         "type": "uint64"
       },
       {
-        "internalType": "uint64",
-        "name": "expiresAt",
-        "type": "uint64"
-      },
-      {
         "internalType": "enum VaultRegistry.Status",
         "name": "status",
         "type": "uint8"
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "vaultId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "mintDigest",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "nonce",
+        "type": "uint256"
+      },
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "internalType": "address",
+                "name": "decryptKey",
+                "type": "address"
+              },
+              {
+                "internalType": "bytes32",
+                "name": "tlsKeyHash",
+                "type": "bytes32"
+              },
+              {
+                "internalType": "bytes32",
+                "name": "authKeyHash",
+                "type": "bytes32"
+              }
+            ],
+            "internalType": "struct VaultRegistry.Keys",
+            "name": "keys",
+            "type": "tuple"
+          },
+          {
+            "internalType": "uint64",
+            "name": "policyVersion",
+            "type": "uint64"
+          },
+          {
+            "internalType": "bytes",
+            "name": "output",
+            "type": "bytes"
+          },
+          {
+            "internalType": "bytes",
+            "name": "proof",
+            "type": "bytes"
+          }
+        ],
+        "internalType": "struct VaultRegistry.MintEvidence",
+        "name": "evidence",
+        "type": "tuple"
+      }
+    ],
+    "name": "verifyMint",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   }
 ]

@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{keccak256, Address, B256, U256},
+    primitives::{keccak256, Address, Signature, B256, U256},
     signers::{local::PrivateKeySigner, SignerSync},
     sol,
     sol_types::{Eip712Domain, SolStruct},
@@ -40,11 +40,43 @@ pub fn sign_mint(
         nonce: U256::from(nonce),
         deadline,
     };
-    let eip_domain = signing_domain(domain);
+    let public_key = signer.credential().verifying_key().to_encoded_point(false);
+    if keccak256(&public_key.as_bytes()[1..]) != B256::from(domain.vault.0) {
+        return Err("mint signer differs from vault identity");
+    }
     signer
-        .sign_hash_sync(&data.eip712_signing_hash(&eip_domain))
+        .sign_hash_sync(&mint_digest(domain, &data)?)
         .map(|s| s.as_bytes().to_vec())
         .map_err(|_| "signing failed")
+}
+
+/// Canonical digest shared by EIP-712 signing and Nitro per-mint user_data.
+pub fn mint_digest(domain: &Domain, data: &Mint) -> Result<B256, &'static str> {
+    if data.vaultId != B256::from(domain.vault.0)
+        || data.depositId.is_zero()
+        || data.recipient.is_zero()
+        || data.amountHandle.is_zero()
+        || data.deadline == 0
+    {
+        return Err("invalid mint authorization");
+    }
+    Ok(data.eip712_signing_hash(&signing_domain(domain)))
+}
+
+/// Validate the enclave's prior authorization before requesting mint-bound NSM evidence.
+pub fn verify_mint_signature(
+    domain: &Domain,
+    data: &Mint,
+    signature: &[u8],
+) -> Result<(), &'static str> {
+    let signer = Signature::try_from(signature)
+        .map_err(|_| "invalid mint signature")?
+        .recover_address_from_prehash(&mint_digest(domain, data)?)
+        .map_err(|_| "invalid mint signature")?;
+    if signer.as_slice() != &domain.vault.0[12..] {
+        return Err("mint signer differs from vault identity");
+    }
+    Ok(())
 }
 
 fn signing_domain(domain: &Domain) -> Eip712Domain {
@@ -100,6 +132,66 @@ pub fn sign_settle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mint_digest_signature_and_identity_match_ethers_vector() {
+        let v: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/test/fixtures/mint-binding-v1.json"
+        ))
+        .unwrap();
+        let signer: PrivateKeySigner =
+            "0000000000000000000000000000000000000000000000000000000000000001"
+                .parse()
+                .unwrap();
+        let domain = Domain {
+            chain_id: 11155111,
+            bridge: [0x22; 20],
+            vault: Id(v["identity"]["vault_id"]
+                .as_str()
+                .unwrap()
+                .parse::<B256>()
+                .unwrap()
+                .0),
+        };
+        let mut request = Mint {
+            vaultId: domain.vault.0.into(),
+            depositId: [0x33; 32].into(),
+            recipient: [0x44; 20].into(),
+            amountHandle: [0x55; 32].into(),
+            inputProofHash: keccak256([1, 2, 3]),
+            nonce: "7".parse().unwrap(),
+            deadline: 123,
+        };
+        assert_eq!(
+            mint_digest(&domain, &request).unwrap(),
+            v["mintDigest"].as_str().unwrap().parse::<B256>().unwrap()
+        );
+        let sig = sign_mint(
+            &signer,
+            &domain,
+            Id([0x33; 32]),
+            [0x44; 20],
+            [0x55; 32],
+            &[1, 2, 3],
+            7,
+            123,
+        )
+        .unwrap();
+        verify_mint_signature(&domain, &request, &sig).unwrap();
+        request.recipient = [0x45; 20].into();
+        assert!(verify_mint_signature(&domain, &request, &sig).is_err());
+        assert!(sign_mint(
+            &PrivateKeySigner::random(),
+            &domain,
+            Id([0x33; 32]),
+            [0x44; 20],
+            [0x55; 32],
+            &[1, 2, 3],
+            7,
+            123
+        )
+        .is_err());
+    }
+
     #[test]
     fn claim_and_settle_match_ethers_typed_data_vectors() {
         let domain = Domain {

@@ -420,6 +420,116 @@
     "type": "function"
   },
   {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes32",
+            "name": "vaultId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "depositId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "amountHandle",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "inputProofHash",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "uint256",
+            "name": "nonce",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint64",
+            "name": "deadline",
+            "type": "uint64"
+          }
+        ],
+        "internalType": "struct Bridge.MintAuthorization",
+        "name": "a",
+        "type": "tuple"
+      },
+      {
+        "internalType": "bytes",
+        "name": "inputProof",
+        "type": "bytes"
+      },
+      {
+        "internalType": "bytes",
+        "name": "signature",
+        "type": "bytes"
+      },
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "internalType": "address",
+                "name": "decryptKey",
+                "type": "address"
+              },
+              {
+                "internalType": "bytes32",
+                "name": "tlsKeyHash",
+                "type": "bytes32"
+              },
+              {
+                "internalType": "bytes32",
+                "name": "authKeyHash",
+                "type": "bytes32"
+              }
+            ],
+            "internalType": "struct VaultRegistry.Keys",
+            "name": "keys",
+            "type": "tuple"
+          },
+          {
+            "internalType": "uint64",
+            "name": "policyVersion",
+            "type": "uint64"
+          },
+          {
+            "internalType": "bytes",
+            "name": "output",
+            "type": "bytes"
+          },
+          {
+            "internalType": "bytes",
+            "name": "proof",
+            "type": "bytes"
+          }
+        ],
+        "internalType": "struct VaultRegistry.MintEvidence",
+        "name": "evidence",
+        "type": "tuple"
+      }
+    ],
+    "name": "confidentialMint",
+    "outputs": [
+      {
+        "internalType": "euint64",
+        "name": "actual",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
     "inputs": [],
     "name": "confidentialProtocolId",
     "outputs": [
@@ -561,27 +671,17 @@
         "internalType": "struct Bridge.MintAuthorization",
         "name": "a",
         "type": "tuple"
-      },
-      {
-        "internalType": "bytes",
-        "name": "inputProof",
-        "type": "bytes"
-      },
-      {
-        "internalType": "bytes",
-        "name": "signature",
-        "type": "bytes"
       }
     ],
-    "name": "mint",
+    "name": "mintDigest",
     "outputs": [
       {
-        "internalType": "euint64",
-        "name": "actual",
+        "internalType": "bytes32",
+        "name": "",
         "type": "bytes32"
       }
     ],
-    "stateMutability": "nonpayable",
+    "stateMutability": "view",
     "type": "function"
   },
   {
