@@ -1,0 +1,278 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 4fc9f98..18e620e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2745,6 +2745,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
+ dependencies = [
+  "const-oid 0.9.6",
++ "der_derive",
++ "flagset",
+  "pem-rfc7468 0.7.0",
+  "zeroize",
+ ]
+@@ -2774,6 +2776,17 @@ dependencies = [
+  "rusticata-macros",
+ ]
+ 
++[[package]]
++name = "der_derive"
++version = "0.7.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.117",
++]
++
+ [[package]]
+ name = "deranged"
+ version = "0.5.8"
+@@ -3468,6 +3481,12 @@ version = "0.5.7"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+ 
++[[package]]
++name = "flagset"
++version = "0.4.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
++
+ [[package]]
+ name = "flate2"
+ version = "1.1.9"
+@@ -9303,6 +9322,7 @@ dependencies = [
+  "semver 1.0.28",
+  "serde",
+  "serde-wasm-bindgen 0.6.5",
++ "sha2 0.10.9",
+  "smoltcp 0.12.0",
+  "thiserror 2.0.21",
+  "tokio",
+@@ -9312,6 +9332,7 @@ dependencies = [
+  "wasm-bindgen-futures",
+  "wasmtimer",
+  "webpki-roots 0.26.11",
++ "x509-cert",
+ ]
+ 
+ [[package]]
+@@ -16322,6 +16343,17 @@ dependencies = [
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "x509-cert"
++version = "0.2.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
++dependencies = [
++ "const-oid 0.9.6",
++ "der 0.7.10",
++ "spki 0.7.3",
++]
++
+ [[package]]
+ name = "x509-parser"
+ version = "0.18.1"
+diff --git a/sdk/typescript/packages/mix-fetch/package.json b/sdk/typescript/packages/mix-fetch/package.json
+index e82d621..2be04a5 100644
+--- a/sdk/typescript/packages/mix-fetch/package.json
++++ b/sdk/typescript/packages/mix-fetch/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@nymproject/mix-fetch",
+-  "version": "3.0.1",
++  "version": "3.0.1-cwxmr.1",
+   "description": "Drop-in `fetch` replacement that routes HTTP/HTTPS requests through the Nym mixnet.",
+   "license": "Apache-2.0",
+   "author": "Nym Technologies SA",
+@@ -13,7 +13,13 @@
+   "bugs": {
+     "url": "https://github.com/nymtech/nym/issues"
+   },
+-  "keywords": ["nym", "mixnet", "privacy", "fetch", "http"],
++  "keywords": [
++    "nym",
++    "mixnet",
++    "privacy",
++    "fetch",
++    "http"
++  ],
+   "sideEffects": false,
+   "files": [
+     "dist/**/*"
+@@ -32,7 +38,7 @@
+     "tsc": "tsc --noEmit true"
+   },
+   "dependencies": {
+-    "@nymproject/mix-tunnel": "workspace:*"
++    "@nymproject/mix-tunnel": "0.3.1-cwxmr.1"
+   },
+   "devDependencies": {
+     "@nymproject/eslint-config-react-typescript": "workspace:*",
+diff --git a/sdk/typescript/packages/mix-fetch/src/index.ts b/sdk/typescript/packages/mix-fetch/src/index.ts
+index 614ed06..658f7ee 100644
+--- a/sdk/typescript/packages/mix-fetch/src/index.ts
++++ b/sdk/typescript/packages/mix-fetch/src/index.ts
+@@ -63,3 +63,12 @@ export const createMixFetch = async (opts?: SetupMixTunnelOpts): Promise<typeof
+   await setupMixTunnel(opts);
+   return mixFetch;
+ };
++
++/** Authenticates the TLS peer before sending HTTP; no redirects, pooling or retry. */
++export const mixFetchPinned = async (url: string, init: RequestInit, origin: string, spki: string): Promise<Response> => {
++  const tunnel = await getMixTunnel();
++  const raw = await tunnel.mixFetchPinned(url, init, origin, spki);
++  return new Response(raw.body as BodyInit, {
++    status: raw.status, statusText: raw.statusText, headers: new Headers(raw.headers),
++  });
++};
+diff --git a/sdk/typescript/packages/mix-tunnel/package.json b/sdk/typescript/packages/mix-tunnel/package.json
+index ac4343a..0d81912 100644
+--- a/sdk/typescript/packages/mix-tunnel/package.json
++++ b/sdk/typescript/packages/mix-tunnel/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@nymproject/mix-tunnel",
+-  "version": "0.3.1",
++  "version": "0.3.1-cwxmr.1",
+   "description": "Shared mixnet tunnel lifecycle for smolmix-based SDKs (mix-fetch, mix-dns, mix-websocket).",
+   "license": "Apache-2.0",
+   "author": "Nym Technologies SA",
+@@ -13,7 +13,13 @@
+   "bugs": {
+     "url": "https://github.com/nymtech/nym/issues"
+   },
+-  "keywords": ["nym", "mixnet", "privacy", "wasm", "webworker"],
++  "keywords": [
++    "nym",
++    "mixnet",
++    "privacy",
++    "wasm",
++    "webworker"
++  ],
+   "sideEffects": false,
+   "files": [
+     "dist/**/*"
+diff --git a/sdk/typescript/packages/mix-tunnel/src/types.ts b/sdk/typescript/packages/mix-tunnel/src/types.ts
+index d05e9a2..b4469b2 100644
+--- a/sdk/typescript/packages/mix-tunnel/src/types.ts
++++ b/sdk/typescript/packages/mix-tunnel/src/types.ts
+@@ -102,6 +102,7 @@ export interface IMixTunnelWorker {
+   disconnectMixTunnel(): Promise<void>;
+   getTunnelState(): Promise<TunnelState>;
+   mixFetch(url: string, init: unknown): Promise<MixFetchResponseInit>;
++  mixFetchPinned(url: string, init: unknown, origin: string, spki: string): Promise<MixFetchResponseInit>;
+   mixDNS(hostname: string): Promise<string>;
+   mixWebSocket(url: string, protocols: string[] | undefined, onEvent: WsEventCallback): Promise<number>;
+   wsSend(handleId: number, data: string | Uint8Array | ArrayBuffer): Promise<void>;
+diff --git a/sdk/typescript/packages/mix-tunnel/src/worker/main.ts b/sdk/typescript/packages/mix-tunnel/src/worker/main.ts
+index 704c714..ef0db8d 100644
+--- a/sdk/typescript/packages/mix-tunnel/src/worker/main.ts
++++ b/sdk/typescript/packages/mix-tunnel/src/worker/main.ts
+@@ -4,6 +4,7 @@ import {
+   disconnectMixTunnel,
+   getTunnelState,
+   mixFetch,
++  mixFetchPinned,
+   mixDNS,
+   mixWebSocket,
+   wsSend,
+@@ -46,6 +47,7 @@ export async function run() {
+     disconnectMixTunnel: () => disconnectMixTunnel(),
+     getTunnelState: async () => getTunnelState(),
+     mixFetch: (url, init) => mixFetch(url, init),
++    mixFetchPinned: (url, init, origin, spki) => mixFetchPinned(url, init, origin, spki),
+     mixDNS: (hostname) => mixDNS(hostname),
+     mixWebSocket: (url, protocols, onEvent) => mixWebSocket(url, protocols, onEvent),
+     wsSend: async (handleId, data) => wsSend(handleId, data),
+diff --git a/wasm/smolmix/Cargo.toml b/wasm/smolmix/Cargo.toml
+index b61870a..2417b95 100644
+--- a/wasm/smolmix/Cargo.toml
++++ b/wasm/smolmix/Cargo.toml
+@@ -36,6 +36,8 @@ rustls-pki-types = { workspace = true, features = ["web"], optional = true }
+ futures-rustls = { workspace = true, features = ["tls12"], optional = true }
+ webpki-roots = { workspace = true, optional = true }
+ rustls-rustcrypto = { workspace = true, optional = true }
++sha2 = { workspace = true }
++x509-cert = { version = "=0.2.5", default-features = false }
+ 
+ # HTTP/1.1 client (tokio-free; workspace declares default-features = false).
+ # Gated by `fetch`: `mixWebSocket` does its upgrade handshake via async-tungstenite directly.
+diff --git a/wasm/smolmix/src/fetch.rs b/wasm/smolmix/src/fetch.rs
+index 0eb4a88..0a15a66 100644
+--- a/wasm/smolmix/src/fetch.rs
++++ b/wasm/smolmix/src/fetch.rs
+@@ -33,6 +33,39 @@ struct FetchInit {
+     body: Option<Vec<u8>>,
+ }
+ 
++/// Private enclave API requests never reuse the ordinary (host,port) pool.
++/// No HTTP bytes leave until TLS proves possession of the pinned private key.
++#[cfg(feature = "fetch")]
++pub async fn fetch_pinned(tunnel: &WasmTunnel, url_str: &str, init: &JsValue, origin: &str, spki: &str)
++    -> Result<JsValue, FetchError> {
++    let url = Url::parse(url_str)?;
++    let expected = Url::parse(origin)?;
++    if expected.scheme() != "https" || expected.as_str() != format!("{}/", expected.origin().ascii_serialization())
++        || url.origin() != expected.origin() || !url.username().is_empty() || url.password().is_some()
++        || url.fragment().is_some() || spki.len() != 64 {
++        return Err(FetchError::Http("invalid pinned HTTPS origin or SPKI".into()));
++    }
++    let mut pin = [0u8; 32];
++    for (i, byte) in pin.iter_mut().enumerate() {
++        *byte = u8::from_str_radix(spki.get(i*2..i*2+2).ok_or_else(|| FetchError::Http("invalid SPKI".into()))?,16)
++            .map_err(|_| FetchError::Http("invalid SPKI".into()))?;
++    }
++    if pin == [0u8;32] { return Err(FetchError::Http("empty SPKI".into())); }
++    let opts = parse_init(init)?;
++    if !matches!(opts.method.as_str(), "GET" | "POST") || opts.body.as_ref().is_some_and(|b| b.len()>4096)
++        || opts.headers.iter().any(|(name,_)| ["host","connection","content-length","transfer-encoding"].iter().any(|bad| name.eq_ignore_ascii_case(bad))) {
++        return Err(FetchError::Http("invalid pinned request".into()));
++    }
++    let host = url.host_str().ok_or_else(|| FetchError::Http("missing host".into()))?;
++    let addr = SocketAddr::new(dns::resolve(tunnel, host).await?, url.port_or_known_default().unwrap_or(443));
++    let tcp = tunnel.tcp_connect(addr).await.map_err(FetchError::Io)?;
++    let tls = tls::connect_pinned(tcp, host, pin).await?;
++    let (response, _, _connection) = http::request(PooledConn::Tls(tls), &opts.method, &url,
++        &opts.headers, opts.body.as_deref(), Some(65536)).await?;
++    if (300..400).contains(&response.status) { return Err(FetchError::Http("pinned request redirect forbidden".into())); }
++    serialise_response(&response)
++}
++
+ /// Execute a fetch request through the mixnet tunnel.
+ #[cfg(feature = "fetch")]
+ pub async fn fetch(
+diff --git a/wasm/smolmix/src/mixfetch.rs b/wasm/smolmix/src/mixfetch.rs
+index 51ada19..a45ee23 100644
+--- a/wasm/smolmix/src/mixfetch.rs
++++ b/wasm/smolmix/src/mixfetch.rs
+@@ -16,3 +16,12 @@ pub fn mix_fetch(url: String, init: JsValue) -> js_sys::Promise {
+         fetch::fetch(tunnel, &url, &init).await.map_err(Into::into)
+     })
+ }
++
++/// Fresh, non-pooled TLS connection authenticated by the caller's registry SPKI.
++#[wasm_bindgen(js_name = "mixFetchPinned")]
++pub fn mix_fetch_pinned(url: String, init: JsValue, origin: String, spki: String) -> js_sys::Promise {
++    future_to_promise(async move {
++        let tunnel = crate::ready_tunnel()?;
++        fetch::fetch_pinned(tunnel, &url, &init, &origin, &spki).await.map_err(Into::into)
++    })
++}
+diff --git a/wasm/smolmix/src/tls.rs b/wasm/smolmix/src/tls.rs
+index 811c354..58002cf 100644
+--- a/wasm/smolmix/src/tls.rs
++++ b/wasm/smolmix/src/tls.rs
+@@ -18,6 +18,9 @@ use rustls::{CipherSuite, ClientConfig};
+ 
+ use crate::error::FetchError;
+ 
++mod pinned;
++pub(crate) use pinned::connect_pinned;
++
+ /// Cached TLS client config: built once, reused for all connections.
+ static TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+ 

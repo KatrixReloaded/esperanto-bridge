@@ -1,0 +1,18 @@
+{
+  "chainId": 11155111,
+  "registry": "0xF83171035445b01B0F70f71Dc2aff923f681D279",
+  "bridge": "0x1C833095c0cd2d50e08dF0031052A865f026C319",
+  "adapter": "0x9A93576c438c7dbF293572D369d41515F84fAc2D",
+  "vault": "0x71679aaf461fbba0d7430be3fc1f8433554fd58c96c039bda07c8a8b2df58f41",
+  "authorized": true,
+  "blockNumber": 12080387,
+  "blockHash": "0x2dc94e1cdfa53fbe9d27789cef50089303bff3bca700d2d36b6db19ed55e46d9",
+  "registryCodeHash": "0x66cab6dbd68363e811bb0af59a0ddcb8bb8df1b4147d1295708373bf0d76323e",
+  "registrySourceHash": "0xa20e211032e26ad19664037af71dcb16c9231955a7764f64c855009a6ad14fa8",
+  "artifact": "contracts/artifacts/VaultRegistry.sol/VaultRegistry.json",
+  "match": "exact runtime including metadata except validated constructor immutable address slots",
+  "immutableAddresses": {
+    "1714": "0x9A93576c438c7dbF293572D369d41515F84fAc2D",
+    "1716": "0x1C833095c0cd2d50e08dF0031052A865f026C319"
+  }
+}

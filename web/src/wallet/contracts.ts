@@ -49,7 +49,7 @@ export async function readBridge(p = metamask.provider()): Promise<BridgeInfo> {
   for (const id of [...ids].sort()) if (await read(p, head.hash, registry, 'authorized', [id, false]) === true) eligible.push(id)
   // All active vaults in this bounded discovery scope must fit the on-chain ACL cap.
   const configured = HEX32.test(FEE_TERMS_HASH) && toAtomic(FIXED_FEE_ATOMIC) !== null && toAtomic(MIN_REDEEM_ATOMIC) !== null && BigInt(MIN_REDEEM_ATOMIC) > BigInt(FIXED_FEE_ATOMIC) && eligible.length > 0 && eligible.length <= 16
-  return { network: 'stagenet', contract, token_contract: token, registry_contract: registry, chain_id: '11155111', fixed_fee_atomic: FIXED_FEE_ATOMIC, minimum_redeem_atomic: MIN_REDEEM_ATOMIC, fee_terms_hash: FEE_TERMS_HASH, eligible_vaults: eligible, scanner_ready: false, readiness_reason: configured ? LIVE_BLOCKER : 'Fee terms or eligible vaults are not configured.', persisted: { halted: false } }
+  return { network: 'stagenet', contract, token_contract: token, registry_contract: registry, chain_id: '11155111', fixed_fee_atomic: FIXED_FEE_ATOMIC, minimum_redeem_atomic: MIN_REDEEM_ATOMIC, fee_terms_hash: FEE_TERMS_HASH, eligible_vaults: eligible, scanner_ready: false, withdrawals_ready: false, terms_configured: configured, readiness_reason: configured ? LIVE_BLOCKER : 'Fee terms or eligible vaults are not configured.', persisted: { halted: false } }
 }
 export async function readRedemption(id: string, p = metamask.provider(), contract = BRIDGE_ADDRESS): Promise<RedeemRecord> {
   if (!isRedeemId(id)) throw new Error('Invalid request ID')

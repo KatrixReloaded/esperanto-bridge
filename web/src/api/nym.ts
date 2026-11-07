@@ -4,7 +4,8 @@ export interface MixInit {
   headers: Record<string, string>
   body?: string
 }
-type MixFetch = (url: string, init: MixInit) => Promise<Response>
+export interface TlsPin { origin: string; spkiSha256: string }
+type MixFetch = (url: string, init: MixInit, pin?: TlsPin) => Promise<Response>
 export interface NymState {
   phase: 'idle' | 'loading' | 'connecting' | 'ready' | 'failed'
   since: number
@@ -26,7 +27,10 @@ const load = async (connecting: () => void): Promise<MixFetch> => {
   connecting()
   // Default mixing and cover traffic. No redirects: a 3xx with Location rejects, like `redirect: 'error'`.
   await m.setupMixTunnel({ maxRedirects: 0 })
-  return m.mixFetch
+  if (typeof m.mixFetchPinned !== 'function') throw new TunnelError('Pinned Nym TLS is unavailable')
+  return (url, init, pin) => pin
+    ? m.mixFetchPinned(url, init, pin.origin, pin.spkiSha256)
+    : m.mixFetch(url, init)
 }
 
 export function createTransport(setup: (connecting: () => void) => Promise<MixFetch> = load) {
@@ -67,7 +71,7 @@ export function createTransport(setup: (connecting: () => void) => Promise<MixFe
      * mix-fetch can't cancel: aborting rejects for the caller and drops the late result,
      * but the request may still reach the API and keeps its slot until it settles.
      */
-    fetch(url: string, init: MixInit, signal?: AbortSignal): Promise<Response> {
+    fetch(url: string, init: MixInit, signal?: AbortSignal, pin?: TlsPin): Promise<Response> {
       if (signal?.aborted) return Promise.reject(signal.reason)
       if (failure) return Promise.reject(failure)
       if (outstanding >= MAX_OUTSTANDING) return Promise.reject(new TunnelBusy('Too many requests in flight'))
@@ -77,7 +81,7 @@ export function createTransport(setup: (connecting: () => void) => Promise<MixFe
         // Startup can take seconds; don't dispatch abandoned requests afterward.
         if (signal?.aborted) throw signal.reason
         if (failure) throw failure
-        return f(url, init)
+        return f(url, init, pin)
       })
       req.then(
         () => update({ pending: --outstanding, requestFailed: false }),

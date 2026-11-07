@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getJson } from './http'
 import { MAX_OUTSTANDING, TunnelBusy, TunnelError, createTransport, nym } from './nym'
 
+vi.mock('../wallet/attestation', () => ({ readAttestedPeer: vi.fn() }))
 vi.mock('../config', async (orig) => ({ ...(await orig<object>()), API_BASE: '' }))
 
 const ok = () => new Response('{}', { status: 200 })
@@ -79,7 +80,7 @@ describe('Nym transport', () => {
     const mix = vi.fn(async (_url: string, _init?: unknown) => ok())
     const t = createTransport(async () => mix)
     await t.fetch('https://a/1', { method: 'POST', headers: { a: 'b' }, body: '{}' }, new AbortController().signal)
-    expect(mix.mock.calls[0]).toEqual(['https://a/1', { method: 'POST', headers: { a: 'b' }, body: '{}' }])
+    expect(mix.mock.calls[0]).toEqual(['https://a/1', { method: 'POST', headers: { a: 'b' }, body: '{}' }, undefined])
     const c = new AbortController()
     c.abort()
     await expect(t.fetch('https://a/2', { headers: {} }, c.signal)).rejects.toBeDefined()
@@ -131,7 +132,7 @@ describe('Nym transport', () => {
     ready(mix)
     await current
     expect(mix).toHaveBeenCalledTimes(1)
-    expect(mix).toHaveBeenCalledWith('https://a/current', { headers: {} })
+    expect(mix).toHaveBeenCalledWith('https://a/current', { headers: {} }, undefined)
     expect(t.outstanding()).toBe(0)
   })
 
@@ -171,7 +172,7 @@ describe('Nym transport', () => {
     expect(await first).toBe(c.signal.reason)
     ready(mix)
     await expect(queued).resolves.toHaveProperty('status', 200)
-    expect(mix).toHaveBeenCalledExactlyOnceWith('https://a/memo', { headers: {} })
+    expect(mix).toHaveBeenCalledExactlyOnceWith('https://a/memo', { headers: {} }, undefined)
     expect(t.outstanding()).toBe(0)
   })
 

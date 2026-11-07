@@ -1,9 +1,12 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { beforeEach, afterEach, expect, it, vi } from 'vitest'
 import { getJson, postJson } from './http'
 import { nym } from './nym'
 
+const authority = vi.hoisted(() => ({ read: vi.fn() }))
+vi.mock('../wallet/attestation', () => ({ readAttestedPeer: () => authority.read() }))
 const config = vi.hoisted(() => ({ API_BASE: '' }))
 vi.mock('../config', () => config)
+beforeEach(() => { vi.spyOn(nym, 'connect').mockResolvedValue(async () => new Response('{}')); authority.read.mockReset().mockImplementation(async () => ({ origin: config.API_BASE, spkiSha256: 'ab'.repeat(32) })) })
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -60,4 +63,37 @@ it.each([
   }
   expect(send.mock.calls[1][1].headers['content-type']).toBe('application/json')
   expect(fetch).not.toHaveBeenCalled()
+})
+
+it('authenticates afresh for every request and passes the registry pin into TLS', async () => {
+  config.API_BASE = 'https://api.example.test'
+  const send = vi.spyOn(nym, 'fetch').mockImplementation(async () => new Response('{}'))
+  await postJson('/v1/deposit-intents', { recipient: 'private' })
+  await getJson('/health')
+  expect(authority.read).toHaveBeenCalledTimes(2)
+  for (const call of send.mock.calls) expect(call[3]).toEqual({ origin: config.API_BASE, spkiSha256: 'ab'.repeat(32) })
+})
+it('never dispatches private data if finalized authority fails', async () => {
+  config.API_BASE = 'https://api.example.test'
+  authority.read.mockRejectedValue(new Error('Vault is not authorized'))
+  const send = vi.spyOn(nym, 'fetch')
+  await expect(postJson('/v1/deposit-intents', { recipient: 'private' })).rejects.toThrow('not authorized')
+  expect(send).not.toHaveBeenCalled()
+})
+
+it('refreshes authority after tunnel startup and aborts a stalled authority read before dispatch', async () => {
+  vi.useFakeTimers()
+  config.API_BASE = 'https://api.example.test'
+  let connect!: () => void
+  vi.mocked(nym.connect).mockImplementation(() => new Promise(resolve => { connect = () => resolve(async () => new Response('{}')) }))
+  authority.read.mockImplementation(() => new Promise(() => {}))
+  const send = vi.spyOn(nym, 'fetch')
+  const result = getJson('/health').catch(error => error)
+  expect(authority.read).not.toHaveBeenCalled()
+  connect()
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(await result).toMatchObject({ name: 'TimeoutError' })
+  expect(authority.read).toHaveBeenCalledTimes(1)
+  expect(send).not.toHaveBeenCalled()
+  expect(vi.getTimerCount()).toBe(0)
 })

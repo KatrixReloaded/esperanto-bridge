@@ -2,9 +2,9 @@ export type Unsubscribe = () => void
 export interface BridgeInfo {
   network: 'stagenet'; contract: string; token_contract: string; registry_contract: string; chain_id: string
   fixed_fee_atomic: string; minimum_redeem_atomic: string; fee_terms_hash: string; eligible_vaults: string[]
-  scanner_ready: boolean; readiness_reason: string; persisted: { halted: boolean }
+  scanner_ready: boolean; withdrawals_ready: boolean; terms_configured: boolean; readiness_reason: string; persisted: { halted: boolean }
 }
-export interface Health { runtime: string; native_development: boolean; bridge_actions_enabled: boolean; required_gates: string[] }
+export interface Health { runtime: string; native_development: boolean; bridge_actions_enabled: boolean; withdrawals_enabled: boolean }
 export type DepositStatus = 'awaiting_deposit' | 'confirming' | 'proving' | 'minting' | 'minted' | 'failed' | 'quarantined' | (string & {})
 export interface DepositIntent {
   intentId: string; vaultId: string; recipient: string; depositAddress: string; network: 'stagenet'; status: DepositStatus

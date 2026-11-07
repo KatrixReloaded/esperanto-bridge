@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@nymproject/mix-fetch": "3.0.1",
+    "@nymproject/mix-fetch": "file:vendor/nymproject-mix-fetch-3.0.1-cwxmr.1.tgz",
     "@zama-fhe/sdk": "3.7.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
@@ -23,5 +23,8 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
+  },
+  "overrides": {
+    "@nymproject/mix-tunnel": "file:vendor/nymproject-mix-tunnel-0.3.1-cwxmr.1.tgz"
   }
 }

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type DepositIntent } from '../api'
-import { DEMO, LIVE_BLOCKER } from '../config'
 import { usePoll } from './usePoll'
 import type { Wallet } from './useWallet'
 import type { BridgeInfoState } from './useBridgeInfo'
@@ -19,7 +18,7 @@ export function useDeposit(wallet: Wallet, bridge: BridgeInfoState) {
     if (result.recipient.toLowerCase() !== own?.recipient.toLowerCase()) throw new Error('Recipient changed')
     return result
   })
-  const blockReason = !DEMO ? LIVE_BLOCKER : !bridge.info?.scanner_ready ? 'Bridge unavailable.' : !wallet.connected ? 'Connect a Sepolia wallet.' : ''
+  const blockReason = !wallet.connected ? 'Connect a Sepolia wallet.' : bridge.error || !bridge.info?.scanner_ready ? bridge.info?.readiness_reason || 'Bridge unavailable.' : ''
   return { issued: own, status, busy, error, blockReason, savedIntentId,
     editSavedIntentId: (value: string) => { setSavedIntentId(value.trim()); setError('') },
     async resume() {

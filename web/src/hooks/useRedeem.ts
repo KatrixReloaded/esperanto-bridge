@@ -49,7 +49,7 @@ export function useRedeem(balance: Balance, bridge: BridgeInfoState, wallet: Wal
   // New redemption work respects the bridge's halt/readiness; tracking continues regardless.
   const blockReason = bridge.halted ? 'Bridge is paused.'
     : !info || bridge.error ? 'Bridge unavailable.'
-    : !info.scanner_ready ? info.readiness_reason
+    : !info.withdrawals_ready ? 'Withdrawals are not ready.'
     : ''
   const locked = !!intent?.terms && LOCKED.has(phase)
   const edited = () => flow.current!.discardUnsent()

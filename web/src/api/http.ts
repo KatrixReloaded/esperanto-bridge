@@ -1,5 +1,6 @@
 import { API_BASE } from '../config'
 import { nym, type MixInit } from './nym'
+import { readAttestedPeer } from '../wallet/attestation'
 
 export class HttpError extends Error {
   constructor(readonly status: number, readonly code: string) {
@@ -7,17 +8,34 @@ export class HttpError extends Error {
   }
 }
 
+function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    promise.then(value => { signal.removeEventListener('abort', abort); resolve(value) }, error => { signal.removeEventListener('abort', abort); reject(error) })
+  })
+}
+
 /**
- * Public routes only, always through the Nym tunnel; there is no direct-fetch fallback.
+ * Authenticated enclave routes, always through the Nym tunnel; there is no direct-fetch fallback.
  * No credentials or API key are sent (mix-fetch doesn't share the browser cookie jar), and the
  * tunnel is set up with no redirects, so any 3xx either rejects or fails `res.ok`.
  */
 async function request<T>(path: string, init: MixInit, signal?: AbortSignal): Promise<T> {
   if (!API_BASE.startsWith('https://')) throw new HttpError(0, 'api_not_configured')
+  if (signal?.aborted) throw signal.reason
+  // Fetch authority after potentially slow Nym startup; never cache it across requests.
+  await waitFor(nym.connect(), signal)
+  if (signal?.aborted) throw signal.reason
+  const peer = await waitFor(readAttestedPeer(), signal)
+  if (signal?.aborted) throw signal.reason
+  if (new URL(API_BASE + path).origin !== peer.origin) throw new HttpError(0, 'enclave_origin_mismatch')
   const headers: Record<string, string> = { accept: 'application/json', ...init.headers }
   // Free ngrok endpoints can return an HTML warning instead of the API response.
   if (new URL(API_BASE).hostname.endsWith('.ngrok-free.app')) headers['ngrok-skip-browser-warning'] = '1'
-  const res = await nym.fetch(API_BASE + path, { ...init, headers }, signal)
+  const res = await nym.fetch(API_BASE + path, { ...init, headers }, signal, peer)
   const body = await res.json().catch(() => null)
   if (!res.ok) throw new HttpError(res.status, body?.error ?? 'http_error')
   if (body == null) throw new HttpError(res.status, 'invalid_response')

@@ -1,5 +1,5 @@
 import { encodeFunctionData, type Hex } from 'viem'
-import { BROWSER_ATTESTATION_READY, LIVE_BLOCKER } from '../config'
+import { LIVE_BLOCKER, VAULT_ID } from '../config'
 import { decodeDestination } from '../lib/monero'
 import { CWXMR_ABI } from '../lib/redeemTx'
 import { MAX_ATOMIC } from '../lib/amount'
@@ -14,11 +14,10 @@ export function validateIntent(value: unknown, expected?: { recipient?: string; 
   decodeDestination(v.depositAddress)
   return v
 }
-export async function requireLiveActions() {
-  // This is deliberately not an environment toggle: browser attested TLS is not implemented.
-  if (!BROWSER_ATTESTATION_READY) throw new Error(LIVE_BLOCKER)
+export async function requireLiveActions(action: 'deposit' | 'withdraw' = 'deposit') {
+  // getJson authenticates the TLS peer against fresh finalized registry authority first.
   const h = await getJson<Health>('/health')
-  if (h.native_development !== false || h.bridge_actions_enabled !== true) throw new Error('Bridge actions unavailable')
+  if (h.native_development !== false || h.runtime !== 'ready' || (action === 'withdraw' ? h.withdrawals_enabled : h.bridge_actions_enabled) !== true) throw new Error('Bridge actions unavailable')
 }
 /** SDK encryption happens in this browser; there is no server prepare/redeem route. */
 export async function prepareLocally(req: PrepareRequest) {
@@ -35,21 +34,29 @@ export const liveApi: BridgeApi = {
     const info = await readBridge()
     try {
       const h = await getJson<Health>('/health', signal)
-      if (h.bridge_actions_enabled !== true) info.readiness_reason = `Backend is not ready. ${LIVE_BLOCKER}`
+      const healthy = h.native_development === false && h.runtime === 'ready'
+      info.scanner_ready = healthy && info.terms_configured && h.bridge_actions_enabled === true
+      info.withdrawals_ready = healthy && info.terms_configured && h.withdrawals_enabled === true
+      if (!info.scanner_ready) info.readiness_reason = 'Deposit processing is unavailable.'
+      else info.readiness_reason = ''
     } catch { info.readiness_reason = `Backend health unavailable. ${LIVE_BLOCKER}` }
     return info
   },
   async createDepositIntent(recipient, nonce, signal) {
     if (!/^0x[0-9a-fA-F]{40}$/.test(recipient) || !hex32.test(nonce)) throw new Error('Invalid intent inputs')
     await requireLiveActions()
-    return validateIntent(await postJson('/v1/deposit-intents', { recipient, nonce }, signal), { recipient })
+    const intent = validateIntent(await postJson('/v1/deposit-intents', { recipient, nonce }, signal), { recipient })
+    if (intent.vaultId.toLowerCase() !== VAULT_ID.toLowerCase()) throw new Error('Unexpected deposit vault')
+    return intent
   },
   async getDepositIntent(intentId, signal) {
     if (!hex32.test(intentId)) throw new Error('Invalid intent ID')
     // Recipient mapping is private bearer data; never fetch it over unverified enclave TLS.
     await requireLiveActions()
-    return validateIntent(await getJson(`/v1/deposit-intents/${intentId}`, signal), { intentId })
+    const intent = validateIntent(await getJson(`/v1/deposit-intents/${intentId}`, signal), { intentId })
+    if (intent.vaultId.toLowerCase() !== VAULT_ID.toLowerCase()) throw new Error('Unexpected deposit vault')
+    return intent
   },
   getRedeem: id => readRedemption(id),
-  async prepareRedeem(req) { await requireLiveActions(); return prepareLocally(req) },
+  async prepareRedeem(req) { await requireLiveActions('withdraw'); return prepareLocally(req) },
 }
