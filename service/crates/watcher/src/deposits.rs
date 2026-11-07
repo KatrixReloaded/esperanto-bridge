@@ -26,6 +26,53 @@ enum MintRecovery {
     Reverted(Id),
 }
 
+fn mint_confirmation_ready(
+    observation: &zz_zama::evm::ReceiptObservation,
+    head: &zz_zama::evm::BlockObservation,
+    demo_confirmations: Option<u64>,
+) -> Result<bool> {
+    let Some(receipt) = &observation.receipt else {
+        return Ok(false);
+    };
+    if let Some(required) = demo_confirmations {
+        ensure!(
+            required >= 2,
+            "demo mint requires at least two Ethereum confirmations"
+        );
+        // Inclusion counts as confirmation one. Never subtract without checking for a reorg.
+        Ok(head
+            .number
+            .checked_sub(receipt.block_number)
+            .is_some_and(|depth| depth >= required - 1))
+    } else {
+        Ok(observation.finality == zz_zama::evm::Finality::Finalized)
+    }
+}
+
+async fn mint_confirmation_head(
+    evm: &zz_zama::evm::Client,
+    observation: &zz_zama::evm::ReceiptObservation,
+    demo_confirmations: Option<u64>,
+) -> Result<Option<zz_zama::evm::BlockObservation>> {
+    if observation.receipt.is_none() {
+        return Ok(None);
+    }
+    let head = if demo_confirmations.is_some() {
+        evm.read(
+            zz_zama::evm::ReadMethod::BlockByNumber,
+            json!(["latest", false]),
+        )
+        .await?
+        .result
+    } else {
+        observation
+            .finalized_head
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("finalized head missing"))?
+    };
+    Ok(mint_confirmation_ready(observation, &head, demo_confirmations)?.then_some(head))
+}
+
 pub struct Deposits {
     store: PostgresStore,
     domain: Domain,
@@ -94,15 +141,21 @@ impl Deposits {
         pending.sort_by_key(|(_, submitted)| !submitted);
         Ok(pending)
     }
-    /// Reconcile only the exact finalized mint receipt and its scoped decrypted actual amount.
-    /// Nothing is credited from an RPC acknowledgement, unfinalized receipt or requested amount.
+    /// Reconcile the exact mint receipt and its scoped decrypted actual amount. Finality is
+    /// the default; measured Sepolia demo policy may explicitly accept a shallower receipt.
+    /// An RPC acknowledgement or requested amount alone never establishes successful minting.
     pub async fn reconcile_mint(
         &mut self,
         identity: &Identity,
         evm: &zz_zama::evm::Client,
         fhe: &zz_zama::fhe::Client,
         id: Id,
+        demo_confirmations: Option<u64>,
     ) -> Result<bool> {
+        ensure!(
+            demo_confirmations.is_none() || self.domain.chain_id == 11155111,
+            "early mint completion is Sepolia-only"
+        );
         let state = self
             .store
             .load(self.domain.vault)
@@ -124,13 +177,18 @@ impl Deposits {
             .find(|i| i.id == deposit.intent_id && i.domain == self.domain)
             .ok_or_else(|| anyhow::anyhow!("intent domain mismatch"))?;
         let observation = evm.receipt(transaction.0.into()).await?;
-        if observation.finality != zz_zama::evm::Finality::Finalized {
+        let Some(head) = mint_confirmation_head(evm, &observation, demo_confirmations).await?
+        else {
             return Ok(false);
-        }
+        };
         let receipt = observation
             .receipt
-            .ok_or_else(|| anyhow::anyhow!("finalized receipt missing"))?;
+            .ok_or_else(|| anyhow::anyhow!("mint receipt missing"))?;
         if receipt.status != 1 {
+            // A shallow revert must never authorize recovery or permanently quarantine a mint.
+            if observation.finality != zz_zama::evm::Finality::Finalized {
+                return Ok(false);
+            }
             self.store
                 .update(self.domain.vault, |state| {
                     state.quarantine_deposit(id)?;
@@ -140,9 +198,6 @@ impl Deposits {
             anyhow::bail!("mint reverted; reconciliation required");
         }
         let handle = mint_event_handle(&receipt.logs, &self.domain, id, intent.recipient)?;
-        let head = observation
-            .finalized_head
-            .ok_or_else(|| anyhow::anyhow!("finalized head missing"))?;
         let read = zz_zama::Bridge::mintedAmountsCall(id.0.into());
         let stored = evm
             .call(
@@ -182,7 +237,9 @@ impl Deposits {
         ensure!(actual <= deposit.amount, "actual mint exceeds backing");
         let after = evm.receipt(transaction.0.into()).await?;
         ensure!(
-            after.finality == zz_zama::evm::Finality::Finalized
+            mint_confirmation_head(evm, &after, demo_confirmations)
+                .await?
+                .is_some()
                 && after
                     .receipt
                     .as_ref()
@@ -1086,6 +1143,32 @@ fn mint_event_handle(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn early_mint_completion_requires_explicit_depth_and_default_still_requires_finality() {
+        use zz_zama::evm::{BlockObservation, Finality, ReceiptObservation};
+        let h = |number| BlockObservation {
+            hash: [1; 32].into(),
+            number,
+            parent_hash: [2; 32].into(),
+            timestamp: 1,
+        };
+        let mut observation: ReceiptObservation = serde_json::from_value(serde_json::json!({
+            "chainId":"11155111","trust":"explicitly_trusted_rpc","finality":"included",
+            "finalizedHead":{"hash":format!("0x{}","01".repeat(32)),"number":"0x63","parentHash":format!("0x{}","02".repeat(32)),"timestamp":"0x1"},
+            "receipt":{"transactionHash":format!("0x{}","03".repeat(32)),"blockHash":format!("0x{}","04".repeat(32)),"blockNumber":"0x64","transactionIndex":"0x0","status":"0x1","gasUsed":"0x1","logs":[]}
+        })).unwrap();
+        assert!(!super::mint_confirmation_ready(&observation, &h(100), Some(2)).unwrap());
+        assert!(super::mint_confirmation_ready(&observation, &h(101), Some(2)).unwrap());
+        assert!(!super::mint_confirmation_ready(&observation, &h(101), Some(3)).unwrap());
+        assert!(super::mint_confirmation_ready(&observation, &h(102), Some(3)).unwrap());
+        assert!(!super::mint_confirmation_ready(&observation, &h(99), Some(2)).unwrap());
+        assert!(!super::mint_confirmation_ready(&observation, &h(200), None).unwrap());
+        assert!(super::mint_confirmation_ready(&observation, &h(101), Some(1)).is_err());
+        observation.finality = Finality::Finalized;
+        assert!(super::mint_confirmation_ready(&observation, &h(200), None).unwrap());
+        observation.receipt = None;
+        assert!(!super::mint_confirmation_ready(&observation, &h(200), Some(2)).unwrap());
+    }
     #[test]
     fn host_kms_context_target_is_distinct_from_gateway_permit_domain() {
         use alloy::{

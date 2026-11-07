@@ -26,6 +26,9 @@ pub struct Config {
     pub confirmations: u64,
     #[serde(default)]
     pub demo_mint_confirmations: Option<u64>,
+    /// Sepolia-only completion policy. None keeps Ethereum finality mandatory.
+    #[serde(default)]
+    pub demo_evm_mint_confirmations: Option<u64>,
     pub gas_limit: u64,
     pub max_fee_per_gas: u64,
     pub max_priority_fee_per_gas: u64,
@@ -85,6 +88,7 @@ impl Config {
                 && !self.adapter_code_hash.is_zero()
                 && self.confirmations >= 10
                 && self.demo_mint_confirmations.is_none_or(|n| n >= 3)
+                && self.demo_evm_mint_confirmations.is_none_or(|n| n >= 2)
                 && self.gas_limit > 0
                 && self.gas_limit <= 10_000_000
                 && self.max_fee_per_gas > 0
@@ -253,7 +257,13 @@ impl Mints {
             if submitted && !recovered {
                 return Ok(
                     if deposits
-                        .reconcile_mint(identity, &self.evm, &self.fhe, id)
+                        .reconcile_mint(
+                            identity,
+                            &self.evm,
+                            &self.fhe,
+                            id,
+                            self.config.demo_evm_mint_confirmations,
+                        )
                         .await?
                     {
                         Progress::Confirmed

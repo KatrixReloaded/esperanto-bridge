@@ -398,7 +398,9 @@ async fn step(
     };
     // Reconcile existing mint envelopes before allocating any new signer nonce.
     if let Some((id, _)) = pending.iter().find(|(_, submitted)| *submitted) {
-        deposits.reconcile_mint(identity, evm, fhe, *id).await?;
+        deposits
+            .reconcile_mint(identity, evm, fhe, *id, None)
+            .await?;
         return Ok(());
     }
     if let Some((id, action)) = payout {

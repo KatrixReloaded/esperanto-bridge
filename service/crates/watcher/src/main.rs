@@ -509,7 +509,7 @@ mod tests {
             "registry_code_hash":format!("0x{}", "03".repeat(32)),
             "adapter":format!("0x{}", "04".repeat(20)),
             "adapter_code_hash":format!("0x{}", "05".repeat(32)),
-            "confirmations":10,"demo_mint_confirmations":3,
+            "confirmations":10,"demo_mint_confirmations":3,"demo_evm_mint_confirmations":2,
             "gas_limit":3_000_000,"max_fee_per_gas":5_000_000_000u64,
             "max_priority_fee_per_gas":1_000_000_000u64
         });
@@ -538,6 +538,7 @@ mod tests {
                 json!(format!("0x{}", "00".repeat(32))),
             ),
             ("/minting/demo_mint_confirmations", json!(2)),
+            ("/minting/demo_evm_mint_confirmations", json!(1)),
         ] {
             let mut invalid = value.clone();
             *invalid.pointer_mut(path).unwrap() = replacement;
