@@ -11,11 +11,11 @@ const BANNERS: Record<BannerKey, [PanelKind, string, string?]> = {
   wrongnet: ['alert', 'Wrong network'],
 }
 
-export function Banner({ kind, onSwitchNetwork }: { kind: BannerKey; onSwitchNetwork: () => void }) {
+export function Banner({ kind, onSwitchNetwork, errorDetail }: { kind: BannerKey; onSwitchNetwork: () => void; errorDetail?: string }) {
   const [k, title, detail] = BANNERS[kind]
   return (
     <div className="banner-wrap">
-      <Panel kind={k} title={title} detail={detail}>
+      <Panel kind={k} title={title} detail={kind === 'unavail' && errorDetail ? errorDetail : detail}>
         {kind === 'nym' && <button type="button" className="btn btn-p btn-sm" onClick={() => location.reload()}>Reload</button>}
         {kind === 'wrongnet' && <button type="button" className="btn btn-p btn-sm" onClick={onSwitchNetwork}>Switch to Sepolia</button>}
       </Panel>

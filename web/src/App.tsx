@@ -59,7 +59,7 @@ export function App({ scheme = 'cyber' }: { scheme?: Scheme }) {
       <Backdrop refs={cursor.refs} veil={veil} />
       <Header route={route} wallet={wallet} info={bridge.info} menu={menu} setMenu={setMenu} />
       {!DEMO && <NymStatus />}
-      {banner && banner !== 'nym' && <Banner kind={banner} onSwitchNetwork={wallet.switchNetwork} />}
+      {banner && banner !== 'nym' && <Banner kind={banner} onSwitchNetwork={wallet.switchNetwork} errorDetail={bridge.errorDetail} />}
       <main className="cw-main">
         {route === 'notfound' ? (
           <NotFound />

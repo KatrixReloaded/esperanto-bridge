@@ -6,6 +6,7 @@ import { MAX_ATOMIC } from '../lib/amount'
 import { readBridge, readRedemption } from '../wallet/contracts'
 import { metamask } from '../wallet/metamask'
 import { getJson, postJson } from './http'
+import { nym } from './nym'
 import type { BridgeApi, DepositIntent, Health, PrepareRequest } from './types'
 const hex32 = /^0x[0-9a-fA-F]{64}$/
 export function validateIntent(value: unknown, expected?: { recipient?: string; intentId?: string }): DepositIntent {
@@ -31,6 +32,9 @@ export async function prepareLocally(req: PrepareRequest) {
 }
 export const liveApi: BridgeApi = {
   async getInfo(signal) {
+    // The live page starts its privacy transport even before a wallet is available.
+    // Failure remains visible in NymStatus; enclave requests still require finalized authority.
+    void nym.connect().catch(() => {})
     const info = await readBridge()
     try {
       const h = await getJson<Health>('/health', signal)

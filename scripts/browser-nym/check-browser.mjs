@@ -35,20 +35,24 @@ try {
   const expression = `(async () => {
     const { nym } = await import('/src/api/nym.ts');
     const { readAttestedPeer } = await import('/src/wallet/attestation.ts');
+    const { metamask } = await import('/src/wallet/metamask.ts');
+    const { liveApi } = await import('/src/api/live.ts');
     const provider = { on() {}, removeListener() {}, async request({method, params=[]}) {
-      if (!['eth_chainId','eth_getBlockByNumber','eth_getBlockByHash','eth_getCode','eth_call'].includes(method)) throw Error('Read-only RPC only');
+      if (!['eth_chainId','eth_getBlockByNumber','eth_getBlockByHash','eth_getCode','eth_call','eth_getLogs'].includes(method)) throw Error('Read-only RPC only');
       const response = await fetch('https://ethereum-sepolia-rpc.publicnode.com', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});
       const data=await response.json(); if(data.error) throw Error(data.error.message); return data.result;
     }};
     nym.subscribe(() => console.log('CWXMR_CHECK:', JSON.stringify(nym.getSnapshot())));
-    console.log('CWXMR_CHECK: starting Nym');
-    await nym.connect();
-    console.log('CWXMR_CHECK: reading finalized authority');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if(nym.getSnapshot().phase==='idle') throw Error('Actual App did not start Nym without a wallet');
+    console.log('CWXMR_CHECK: actual App started Nym without a wallet');
+    // Inject real read-only RPC at the wallet boundary; no account/signature/balance fabrication.
+    metamask.provider = () => provider;
+    console.log('CWXMR_CHECK: running complete liveApi.getInfo');
+    const info = await liveApi.getInfo(AbortSignal.timeout(120000));
+    if(!info.scanner_ready) throw Error(info.readiness_reason || 'Complete bridge info did not enable deposits');
     const peer = await readAttestedPeer(provider);
-    console.log('CWXMR_CHECK:', JSON.stringify({origin:peer.origin,spki:peer.spkiSha256,block:peer.blockHash}));
-    const response = await nym.fetch(peer.origin + '/health', {headers:{accept:'application/json'}}, AbortSignal.timeout(90000), peer);
-    if(!response.ok) throw Error('Health HTTP '+response.status);
-    return {health:await response.json(),origin:peer.origin,spki:peer.spkiSha256,block:peer.blockHash};
+    return {bridgeInfo:{scanner_ready:info.scanner_ready,withdrawals_ready:info.withdrawals_ready,terms_configured:info.terms_configured,token_contract:info.token_contract,eligibleVaultCount:info.eligible_vaults.length},origin:peer.origin,spki:peer.spkiSha256,block:peer.blockHash};
   })()`;
   const result = await Promise.race([call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId), new Promise((_, reject) => setTimeout(() => reject(Error('Browser Nym check exceeded 4 minutes')), 240000))]);
   if (result.exceptionDetails) throw Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);

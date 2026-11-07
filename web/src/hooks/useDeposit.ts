@@ -18,7 +18,7 @@ export function useDeposit(wallet: Wallet, bridge: BridgeInfoState) {
     if (result.recipient.toLowerCase() !== own?.recipient.toLowerCase()) throw new Error('Recipient changed')
     return result
   })
-  const blockReason = !wallet.connected ? 'Connect a Sepolia wallet.' : bridge.error || !bridge.info?.scanner_ready ? bridge.info?.readiness_reason || 'Bridge unavailable.' : ''
+  const blockReason = !wallet.connected ? 'Connect a Sepolia wallet.' : bridge.error || !bridge.info?.scanner_ready ? bridge.errorDetail || bridge.info?.readiness_reason || 'Bridge unavailable.' : ''
   return { issued: own, status, busy, error, blockReason, savedIntentId,
     editSavedIntentId: (value: string) => { setSavedIntentId(value.trim()); setError('') },
     async resume() {

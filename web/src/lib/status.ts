@@ -34,3 +34,15 @@ export function infoBanner(info: BridgeInfo | undefined, error: unknown): InfoBa
   if (info.persisted.halted) return 'paused'
   return info.scanner_ready ? null : 'notready'
 }
+
+/** Never display arbitrary provider errors, which can contain RPC payloads or URLs. */
+export function bridgeErrorMessage(error: unknown): string | undefined {
+  if (!error) return undefined
+  const message = error instanceof Error ? error.message : ''
+  if (message === 'MetaMask is not installed') return 'Enable MetaMask for this site, then connect your Sepolia wallet.'
+  if (message === 'Sepolia wallet required') return 'Switch MetaMask to Ethereum Sepolia, then retry.'
+  if (message === 'Deployment block not configured' || message === 'Vault discovery range exceeds local PoC limit') return 'Bridge discovery configuration needs an operator update.'
+  if (message === 'Unexpected token precision') return 'The configured token does not report 12 decimals. Contact the operator.'
+  if (error instanceof TunnelError) return 'Nym could not start. Reload to reconnect.'
+  return 'The wallet RPC could not read verified Sepolia state. Check MetaMask’s network and RPC connection; the page will retry.'
+}
