@@ -130,3 +130,18 @@ test('logs are bounded and match requested addresses/topics/block range',async()
   for(const invalid of [[{...l,address:'0x'+'33'.repeat(20)}],[{...l,topics:[hash(7)]}],[{...l,blockNumber:'0xb'}],[{...l,removed:true}],[l,l]])
     await assert.rejects(()=>mock(()=>invalid).client.handle('/evm/read',body));
 });
+
+test('mint simulation forwards exact gas and EIP-1559 fees and rejects malformed budgets', async () => {
+  const tx = {from:account,to:account,data:'0x1234',value:'0x0',gas:'0x4c4b40',
+    maxFeePerGas:'0x12a05f200',maxPriorityFeePerGas:'0x3b9aca00'};
+  const block = {blockHash:hash(1),requireCanonical:true};
+  const m=mock((method,params)=>{assert.equal(method,'eth_call');assert.deepEqual(params,[tx,block]);return '0x';});
+  await m.client.handle('/evm/read',{chainId:CHAIN_ID,method:'eth_call',params:[tx,block]});
+  for (const patch of [{gas:'0x00'}, {maxFeePerGas:'0x0'}, {maxFeePerGas:'0x1'},
+    {maxPriorityFeePerGas:undefined}, {maxFeePerGas:undefined},
+    {maxFeePerGas:'0x1'+'0'.repeat(32)}, {gasPrice:'0x1'}]) {
+    const before=m.calls.length;
+    await assert.rejects(()=>m.client.handle('/evm/read',{chainId:CHAIN_ID,method:'eth_call',params:[{...tx,...patch},block]}));
+    assert.equal(m.calls.length,before);
+  }
+});

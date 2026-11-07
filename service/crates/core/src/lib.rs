@@ -103,6 +103,8 @@ pub struct VaultState {
     pub mint_results: Vec<(Id, AtomicAmount)>,
     pub evm_operations: Vec<EvmOperation>,
     #[serde(default)]
+    pub reverted_mints: Vec<deposits::RevertedMint>,
+    #[serde(default)]
     pub deposits: Vec<deposits::Deposit>,
     #[serde(default)]
     pub monero_cursor: Option<ChainEvidence>,
@@ -293,11 +295,16 @@ impl VaultState {
                 Err(StateError::Conflict)
             };
         }
-        if self.evm_operations.iter().any(|x| {
-            x.domain.chain_id == operation.domain.chain_id
-                && x.signer == operation.signer
-                && x.nonce == operation.nonce
-        }) {
+        if self
+            .evm_operations
+            .iter()
+            .chain(self.reverted_mints.iter().map(|r| &r.operation))
+            .any(|x| {
+                x.domain.chain_id == operation.domain.chain_id
+                    && x.signer == operation.signer
+                    && x.nonce == operation.nonce
+            })
+        {
             return Err(StateError::Conflict);
         }
         self.evm_operations.push(operation);

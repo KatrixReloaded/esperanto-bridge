@@ -57,6 +57,30 @@ impl SignedTransaction {
     pub fn raw(&self) -> &Bytes {
         &self.raw_transaction
     }
+
+    /// Simulate the signed mint's execution budget, not the RPC's larger default gas allowance.
+    pub fn simulation_call(&self) -> Result<Value> {
+        let envelope = TxEnvelope::decode_2718_exact(&self.raw_transaction)?;
+        let sender = envelope.recover_signer()?;
+        let TxEnvelope::Eip1559(signed) = envelope else {
+            return Err(anyhow!("simulation requires EIP-1559"));
+        };
+        let tx = signed.tx();
+        ensure!(
+            tx.access_list.0.is_empty(),
+            "unsupported simulation access list"
+        );
+        let alloy::primitives::TxKind::Call(to) = tx.to else {
+            return Err(anyhow!("simulation requires a call"));
+        };
+        Ok(json!({
+            "from": sender, "to": to, "data": tx.input,
+            "value": format!("{:#x}", tx.value),
+            "gas": format!("{:#x}", tx.gas_limit),
+            "maxFeePerGas": format!("{:#x}", tx.max_fee_per_gas),
+            "maxPriorityFeePerGas": format!("{:#x}", tx.max_priority_fee_per_gas)
+        }))
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmissionOutcome {
@@ -156,6 +180,26 @@ pub struct ReceiptObservation {
     pub finalized_head: Option<BlockObservation>,
 }
 impl ReceiptObservation {
+    /// A missing, unfinalized or successful receipt never permits a replacement mint.
+    pub fn finalized_revert(&self, expected: B256) -> Result<Option<zz_core::ChainEvidence>> {
+        self.validate(expected)?;
+        if self.finality != Finality::Finalized {
+            return Ok(None);
+        }
+        let receipt = self
+            .receipt
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing receipt"))?;
+        if receipt.status != 0 {
+            return Ok(None);
+        }
+        ensure!(receipt.logs.is_empty(), "reverted receipt contains logs");
+        Ok(Some(zz_core::ChainEvidence {
+            height: receipt.block_number,
+            block_hash: zz_core::Id(receipt.block_hash.0),
+        }))
+    }
+
     fn validate(&self, expected: B256) -> Result<()> {
         ensure!(self.chain_id == CHAIN_ID.to_string(), "chain_mismatch");
         match (&self.receipt, &self.finalized_head, self.finality) {

@@ -41,11 +41,16 @@ function anchor(value: unknown): { blockHash: string; requireCanonical: true } {
   return { blockHash: hash(a.blockHash), requireCanonical: true };
 }
 function transaction(value: unknown): ObjectValue {
-  const tx = object(value); fields(tx, ['to', 'data'], ['from', 'value', 'gas']);
+  const tx = object(value); fields(tx, ['to', 'data'], ['from', 'value', 'gas', 'maxFeePerGas', 'maxPriorityFeePerGas']);
   address(tx.to); bytes(tx.data);
   if (tx.from !== undefined) address(tx.from);
   if (tx.value !== undefined) quantity(tx.value, (1n << 256n) - 1n);
   if (tx.gas !== undefined) quantity(tx.gas);
+  if (tx.maxFeePerGas !== undefined || tx.maxPriorityFeePerGas !== undefined) {
+    const maximum = (1n << 128n) - 1n;
+    const fee = quantity(tx.maxFeePerGas, maximum), tip = quantity(tx.maxPriorityFeePerGas, maximum);
+    if (fee === 0n || tip > fee) bad();
+  }
   return tx;
 }
 function filter(value: unknown): ObjectValue {

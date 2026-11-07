@@ -45,7 +45,74 @@ pub struct MintAuthorization {
     pub signature: Vec<u8>,
 }
 
+/// A finalized status-zero receipt. Keep both the signed bytes and original authorization
+/// when explicitly recovering a reverted mint; its consumed gas nonce stays reserved.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevertedMint {
+    pub operation: EvmOperation,
+    pub authorization: MintAuthorization,
+    pub inclusion: ChainEvidence,
+}
+
 impl VaultState {
+    /// Caller verifies a canonical finalized status-zero receipt, fresh source eligibility and
+    /// unused bridge deposit/nonce. Never use this for an absent or ambiguous transaction.
+    pub fn recover_reverted_mint(
+        &mut self,
+        id: Id,
+        transaction: Id,
+        inclusion: ChainEvidence,
+        observed_time: u64,
+        deadline: u64,
+        signature: Vec<u8>,
+    ) -> Result<(), StateError> {
+        if inclusion.block_hash.0 == [0; 32] || deadline <= observed_time || signature.len() != 65 {
+            return Err(StateError::InvalidTransition);
+        }
+        let index = self
+            .deposits
+            .iter()
+            .position(|d| d.id == id)
+            .ok_or(StateError::InvalidTransition)?;
+        let deposit = &self.deposits[index];
+        if deposit.quarantined {
+            return Err(StateError::InvalidTransition);
+        }
+        let MintState::Submitted {
+            authorization,
+            transaction: expected,
+        } = &deposit.state
+        else {
+            return Err(StateError::InvalidTransition);
+        };
+        if *expected != transaction || observed_time <= authorization.deadline {
+            return Err(StateError::Conflict);
+        }
+        let intent = self
+            .intents
+            .iter()
+            .find(|i| i.id == deposit.intent_id)
+            .ok_or(StateError::InvalidTransition)?;
+        let op_index = self
+            .evm_operations
+            .iter()
+            .position(|op| {
+                op.operation_id == id && op.domain == intent.domain && op.tx_hash == transaction
+            })
+            .ok_or(StateError::Conflict)?;
+        let original = authorization.clone();
+        let mut renewed = original.clone();
+        renewed.deadline = deadline;
+        renewed.signature = signature;
+        self.reverted_mints.push(RevertedMint {
+            operation: self.evm_operations.remove(op_index),
+            authorization: original,
+            inclusion,
+        });
+        self.deposits[index].state = MintState::Authorized(renewed);
+        Ok(())
+    }
+
     /// Call within a durable transaction after scanning an issued subaddress. Change and primary
     /// address outputs must never be supplied here. Repeated identical observations are harmless.
     pub fn observe_deposit(&mut self, deposit: Deposit) -> Result<(), StateError> {
@@ -135,6 +202,42 @@ impl VaultState {
             MintState::Authorized(old) if *old == authorization => Ok(()),
             _ => Err(StateError::Conflict),
         }
+    }
+
+    /// Explicit recovery only: caller verifies expiry and unused on-chain deposit/nonce.
+    /// Preserve every mint term except deadline/signature; never replace a journaled transaction.
+    pub fn renew_expired_mint(
+        &mut self,
+        id: Id,
+        expected_deadline: u64,
+        observed_time: u64,
+        deadline: u64,
+        signature: Vec<u8>,
+    ) -> Result<(), StateError> {
+        if observed_time <= expected_deadline
+            || deadline <= observed_time
+            || signature.len() != 65
+            || self.evm_operations.iter().any(|op| op.operation_id == id)
+        {
+            return Err(StateError::InvalidTransition);
+        }
+        let deposit = self
+            .deposits
+            .iter_mut()
+            .find(|d| d.id == id)
+            .ok_or(StateError::InvalidTransition)?;
+        if deposit.quarantined {
+            return Err(StateError::InvalidTransition);
+        }
+        let MintState::Authorized(old) = &mut deposit.state else {
+            return Err(StateError::InvalidTransition);
+        };
+        if old.deadline != expected_deadline {
+            return Err(StateError::Conflict);
+        }
+        old.deadline = deadline;
+        old.signature = signature;
+        Ok(())
     }
 
     /// Atomically journal the exact signed EVM bytes and advance the deposit before sending.

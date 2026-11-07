@@ -197,3 +197,31 @@ async fn receipt_requires_consistent_hash_logs_finality_and_status() {
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn only_matching_finalized_status_zero_receipt_permits_recovery() {
+    let hash = B256::repeat_byte(8);
+    let mut value = receipt_value(hash);
+    let success: ReceiptObservation = serde_json::from_value(value.clone()).unwrap();
+    assert!(success.finalized_revert(hash).unwrap().is_none());
+    value["receipt"]["status"] = json!("0x0");
+    let logs_on_revert: ReceiptObservation = serde_json::from_value(value.clone()).unwrap();
+    assert!(logs_on_revert.finalized_revert(hash).is_err());
+    value["receipt"]["logs"] = json!([]);
+    let failed: ReceiptObservation = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        failed.finalized_revert(hash).unwrap(),
+        Some(zz_core::ChainEvidence {
+            block_hash: zz_core::Id(B256::repeat_byte(1).0),
+            height: 10,
+        })
+    );
+    assert!(failed.finalized_revert(B256::repeat_byte(9)).is_err());
+    value["finality"] = json!("included");
+    value["finalizedHead"]["number"] = json!("0x9");
+    let included: ReceiptObservation = serde_json::from_value(value).unwrap();
+    assert!(included.finalized_revert(hash).unwrap().is_none());
+    let missing: ReceiptObservation = serde_json::from_value(json!({"chainId":"11155111",
+        "trust":"explicitly_trusted_rpc","receipt":null,"finality":"not_found","finalizedHead":null})).unwrap();
+    assert!(missing.finalized_revert(hash).unwrap().is_none());
+}

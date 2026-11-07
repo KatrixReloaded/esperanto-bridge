@@ -170,6 +170,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            tx.simulation_call().unwrap(),
+            serde_json::json!({
+                "from": signer.address(), "to": Address::from(domain.bridge),
+                "data": Bytes::from(call.abi_encode()), "value": "0x0",
+                "gas": "0xf4240", "maxFeePerGas": "0x2540be400",
+                "maxPriorityFeePerGas": "0x3b9aca00",
+            })
+        );
+        assert_eq!(
             SignedTransaction::restore(tx.raw().clone(), tx.hash())
                 .unwrap()
                 .hash(),

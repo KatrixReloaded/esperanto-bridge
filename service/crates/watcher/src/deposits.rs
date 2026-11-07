@@ -16,6 +16,15 @@ use zz_monero::chain::ObservedOutput;
 use zz_monero::{chain::ChainStatus, stagenet::TrustedStagenet};
 
 alloy::sol! { function getCurrentKmsContextId() external view returns (uint256); }
+alloy::sol! { interface RetryPins {
+    function consumedDeposits(bytes32 depositId) view returns (bool);
+    function usedMintNonces(bytes32 vaultId,uint256 nonce) view returns (bool);
+} }
+
+enum MintRecovery {
+    Expired(u64),
+    Reverted(Id),
+}
 
 pub struct Deposits {
     store: PostgresStore,
@@ -42,6 +51,20 @@ impl std::fmt::Display for ChainUnavailable {
 impl std::error::Error for ChainUnavailable {}
 
 impl Deposits {
+    /// Cooperative single-process fence for the explicitly trusted stagenet mint runner.
+    /// It does not protect against a malicious PostgreSQL operator or cloned database.
+    pub fn acquire_mint_lease(&mut self) -> Result<()> {
+        self.store
+            .acquire_stagenet_poc_lease(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("cooperative mint lease unavailable"))
+    }
+
+    pub fn check_mint_lease(&mut self) -> Result<()> {
+        self.store
+            .check_stagenet_poc_lease(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("cooperative mint lease lost"))
+    }
+
     /// Public identifiers only, with unresolved submitted transactions first. A quarantined
     /// unfinished mint blocks new authorizations until an operator reconciles the journal.
     pub fn pending_mints(&mut self) -> Result<Vec<(Id, bool)>> {
@@ -179,6 +202,199 @@ impl Deposits {
             .map_err(|_| anyhow::anyhow!("mint confirmation persistence failed"))?;
         Ok(true)
     }
+    /// Recover exactly the expired authorization selected by measured operator configuration.
+    /// No transaction may have been journaled. The old proof/request must be reconciled separately.
+    pub async fn renew_expired_mint(
+        &mut self,
+        identity: &Identity,
+        chain: &TrustedStagenet,
+        evm: &zz_zama::evm::Client,
+        id: Id,
+        expected_deadline: u64,
+        confirmations: u64,
+    ) -> Result<()> {
+        self.recover_mint(
+            identity,
+            chain,
+            evm,
+            id,
+            MintRecovery::Expired(expected_deadline),
+            confirmations,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Only the exact transaction selected in the measured image may enter this recovery path.
+    pub async fn recover_reverted_mint(
+        &mut self,
+        identity: &Identity,
+        chain: &TrustedStagenet,
+        evm: &zz_zama::evm::Client,
+        id: Id,
+        transaction: Id,
+        confirmations: u64,
+    ) -> Result<bool> {
+        self.recover_mint(
+            identity,
+            chain,
+            evm,
+            id,
+            MintRecovery::Reverted(transaction),
+            confirmations,
+        )
+        .await
+    }
+
+    async fn recover_mint(
+        &mut self,
+        identity: &Identity,
+        chain: &TrustedStagenet,
+        evm: &zz_zama::evm::Client,
+        id: Id,
+        recovery: MintRecovery,
+        confirmations: u64,
+    ) -> Result<bool> {
+        let state = self
+            .store
+            .load(self.domain.vault)
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        let deposit = state
+            .deposits
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| anyhow::anyhow!("unknown retry deposit"))?;
+        ensure!(!deposit.quarantined, "quarantined mint cannot be recovered");
+        let (old, reverted) = match (&recovery, &deposit.state) {
+            (MintRecovery::Expired(expected), MintState::Authorized(old)) => {
+                if old.deadline != *expected {
+                    ensure!(old.deadline > *expected, "unexpected retry authorization");
+                    return Ok(false);
+                }
+                ensure!(
+                    !state.evm_operations.iter().any(|op| op.operation_id == id),
+                    "journaled mint cannot be renewed"
+                );
+                (old, None)
+            }
+            (
+                MintRecovery::Reverted(expected),
+                MintState::Submitted {
+                    authorization,
+                    transaction,
+                },
+            ) => {
+                if transaction != expected {
+                    return Ok(false);
+                }
+                let observation = evm.receipt(transaction.0.into()).await?;
+                let Some(inclusion) = observation.finalized_revert(transaction.0.into())? else {
+                    return Ok(false);
+                };
+                (authorization, Some((*transaction, inclusion)))
+            }
+            _ => anyhow::bail!("mint state does not permit selected recovery"),
+        };
+        ensure!(
+            self.eligible(chain, id, confirmations).await?.is_some(),
+            "retry deposit is not eligible"
+        );
+        let head: zz_zama::evm::BlockObservation = evm
+            .read(
+                zz_zama::evm::ReadMethod::BlockByNumber,
+                json!(["latest", false]),
+            )
+            .await?
+            .result;
+        ensure!(
+            head.timestamp > old.deadline,
+            "retry authorization has not expired"
+        );
+        let bridge = Address::from(self.domain.bridge);
+        let consumed = evm
+            .call(
+                bridge,
+                RetryPins::consumedDepositsCall {
+                    depositId: id.0.into(),
+                }
+                .abi_encode()
+                .into(),
+                head.hash,
+            )
+            .await?
+            .result;
+        let used = evm
+            .call(
+                bridge,
+                RetryPins::usedMintNoncesCall {
+                    vaultId: self.domain.vault.0.into(),
+                    nonce: U256::from(old.nonce),
+                }
+                .abi_encode()
+                .into(),
+                head.hash,
+            )
+            .await?
+            .result;
+        ensure!(
+            !RetryPins::consumedDepositsCall::abi_decode_returns_validate(&consumed)?
+                && !RetryPins::usedMintNoncesCall::abi_decode_returns_validate(&used)?,
+            "mint already consumed; reconcile instead of renewing"
+        );
+        let intent = state
+            .intents
+            .iter()
+            .find(|i| i.id == deposit.intent_id && i.domain == self.domain)
+            .ok_or_else(|| anyhow::anyhow!("retry intent missing"))?;
+        let deadline = head
+            .timestamp
+            .checked_add(600)
+            .ok_or_else(|| anyhow::anyhow!("retry deadline overflow"))?;
+        let signature = zz_zama::mint::sign_mint(
+            &identity.mint_signer()?,
+            &self.domain,
+            id,
+            intent.recipient,
+            old.amount_handle.0,
+            &old.input_proof,
+            old.nonce,
+            deadline,
+        )
+        .map_err(anyhow::Error::msg)?;
+        if let Some((transaction, inclusion)) = &reverted {
+            let after = evm.receipt(transaction.0.into()).await?;
+            ensure!(
+                after.finalized_revert(transaction.0.into())?.as_ref() == Some(inclusion),
+                "finalized reverted receipt changed during recovery"
+            );
+        }
+        self.check_mint_lease()?;
+        self.store
+            .update(self.domain.vault, |state| {
+                if let Some((transaction, inclusion)) = reverted {
+                    state.recover_reverted_mint(
+                        id,
+                        transaction,
+                        inclusion,
+                        head.timestamp,
+                        deadline,
+                        signature,
+                    )?;
+                } else {
+                    state.renew_expired_mint(
+                        id,
+                        old.deadline,
+                        head.timestamp,
+                        deadline,
+                        signature,
+                    )?;
+                }
+                Ok(())
+            })
+            .map_err(|_| anyhow::anyhow!("retry authorization persistence failed"))?;
+        Ok(true)
+    }
+
     /// Validate the prover's calldata against the durable authorization, then persist the exact
     /// signed envelope before handing it to any network transport. No transaction is sent here.
     pub async fn journal_mint_transaction(
@@ -237,9 +453,6 @@ impl Deposits {
             head.timestamp <= authorization.deadline,
             "mint authorization expired"
         );
-        let _: zz_zama::evm::Observation<String> = evm.read(zz_zama::evm::ReadMethod::Call,
-            json!([{"from":sender,"to":Address::from(self.domain.bridge),"data":format!("0x{}",hex::encode(&calldata))},
-                {"blockHash":head.hash,"requireCanonical":true}])).await?;
         let nonce: String = evm
             .read(
                 zz_zama::evm::ReadMethod::TransactionCount,
@@ -272,6 +485,13 @@ impl Deposits {
             nonce,
             fees,
         )?;
+        let _: zz_zama::evm::Observation<String> = evm
+            .read(
+                zz_zama::evm::ReadMethod::Call,
+                json!([transaction.simulation_call()?,
+                    {"blockHash":head.hash,"requireCanonical":true}]),
+            )
+            .await?;
         let operation = zz_core::EvmOperation {
             domain: self.domain.clone(),
             operation_id: id,

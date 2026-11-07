@@ -159,7 +159,8 @@ mod tests {
             .parse()
             .unwrap();
         let config = Config {
-            tls_name: "postgres.test".into(),
+            tls_name: std::env::var("CWXMR_TEST_PG_TLS_NAME")
+                .unwrap_or_else(|_| "postgres.test".into()),
             ca_pem: std::fs::read_to_string(ca_path).unwrap(),
             database: "postgres".into(),
             user: std::env::var("CWXMR_TEST_PG_USER").unwrap(),

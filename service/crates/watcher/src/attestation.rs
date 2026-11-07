@@ -289,6 +289,37 @@ impl Drop for Identity {
     }
 }
 /// No mock document is ever returned. Native development cannot produce Nitro proof evidence.
+pub fn current_pcr_tuple() -> Result<alloy::primitives::B256> {
+    #[cfg(all(feature = "nitro", target_os = "linux"))]
+    {
+        use aws_nitro_enclaves_nsm_api::{
+            api::{Request, Response},
+            driver::{nsm_exit, nsm_init, nsm_process_request},
+        };
+        let fd = nsm_init();
+        ensure!(fd >= 0, "NSM is unavailable");
+        let result = (|| {
+            let mut values = Vec::with_capacity(144);
+            for index in 0..3 {
+                match nsm_process_request(fd, Request::DescribePCR { index }) {
+                    Response::DescribePCR { lock: true, data }
+                        if data.len() == 48 && data.iter().any(|b| *b != 0) =>
+                    {
+                        values.extend(data)
+                    }
+                    _ => bail!("nonzero locked image measurements required"),
+                }
+            }
+            Ok(alloy::primitives::keccak256(values))
+        })();
+        nsm_exit(fd);
+        return result;
+    }
+    #[cfg(not(all(feature = "nitro", target_os = "linux")))]
+    bail!("real Nitro image measurements require Linux and the nitro feature")
+}
+
+/// No mock document is ever returned. Native development cannot produce Nitro proof evidence.
 pub fn attest(public_key: &[u8], user_data: &[u8], nonce: &[u8]) -> Result<Vec<u8>> {
     ensure!(
         !public_key.is_empty()
