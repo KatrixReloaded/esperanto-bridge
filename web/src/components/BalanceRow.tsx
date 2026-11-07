@@ -5,7 +5,7 @@ import { ErrorMsg } from './ui'
 
 /** Balance body (without its label). Pass `connected=false` to show the connect hint. */
 export function BalanceRow({ balance, connected }: { balance: Balance; connected: boolean }) {
-  if (!connected) return <div className="bal-row"><span className="muted">Connect a wallet to see your balance.</span></div>
+  if (!connected) return <div className="bal-row"><span className="muted">Connect wallet to view balance.</span></div>
   switch (balance.state) {
     case 'encrypted':
       return (
@@ -22,7 +22,6 @@ export function BalanceRow({ balance, connected }: { balance: Balance; connected
           <div className="bal-row">
             <button type="button" className="btn btn-s btn-sm busy" aria-disabled="true"><Icon name="wallet" /><span>Confirm in wallet</span></button>
           </div>
-          <div className="help">Sign the permit in your wallet. No gas.</div>
         </>
       )
     case 'decrypting':

@@ -7,7 +7,7 @@ const BANNERS: Record<BannerKey, [PanelKind, string, string?]> = {
   nym: ['alert', "Couldn't connect through Nym."],
   unavail: ['alert', 'Bridge unavailable', 'Retrying…'],
   paused: ['alert', 'Bridge is paused.'],
-  notready: ['info', "Bridge isn't ready.", 'Live actions require backend readiness and browser enclave identity verification.'],
+  notready: ['info', 'Bridge connecting…'],
   wrongnet: ['alert', 'Wrong network'],
 }
 

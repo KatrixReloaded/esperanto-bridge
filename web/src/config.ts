@@ -9,7 +9,7 @@ export const DEPLOYMENT_BLOCK = import.meta.env.VITE_DEPLOYMENT_BLOCK ?? ''
 export const FEE_TERMS_HASH = import.meta.env.VITE_FEE_TERMS_HASH ?? ''
 export const FIXED_FEE_ATOMIC = import.meta.env.VITE_FIXED_FEE_ATOMIC ?? ''
 export const MIN_REDEEM_ATOMIC = import.meta.env.VITE_MIN_REDEEM_ATOMIC ?? ''
-export const LIVE_BLOCKER = 'Waiting for an authorized enclave connection through Nym.'
+export const LIVE_BLOCKER = 'Connecting to vault…'
 export const POLL_MS = DEMO ? 1000 : 5000
 export const DEFAULT_CHAIN_ID = '11155111'
 export const explorerTx = (hash: string) => `https://sepolia.etherscan.io/tx/${hash}`

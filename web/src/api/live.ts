@@ -45,7 +45,7 @@ export const liveApi: BridgeApi = {
       info.withdrawals_ready = healthy && info.terms_configured && h.withdrawals_enabled === true
       if (!info.scanner_ready) info.readiness_reason = 'Deposit processing is unavailable.'
       else info.readiness_reason = ''
-    } catch (error) { info.readiness_reason = error instanceof WalletReadError ? bridgeErrorMessage(error)! : `Backend health unavailable. ${LIVE_BLOCKER}` }
+    } catch (error) { info.readiness_reason = error instanceof WalletReadError ? bridgeErrorMessage(error)! : `Vault unavailable. ${LIVE_BLOCKER}` }
     return info
   },
   async createDepositIntent(recipient, nonce, signal) {

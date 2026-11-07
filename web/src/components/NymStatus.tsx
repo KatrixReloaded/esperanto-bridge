@@ -3,7 +3,7 @@ import { nym, type NymState } from '../api/nym'
 
 export function nymStatusLabel(s: NymState, elapsed: number) {
   if (s.phase === 'idle') return 'Nym · Not started'
-  if (s.phase === 'loading') return 'Nym · Loading privacy connection…'
+  if (s.phase === 'loading') return 'Nym · Loading…'
   if (s.phase === 'connecting') return elapsed >= 30 ? 'Nym · Still connecting…' : 'Nym · Connecting…'
   if (s.phase === 'failed') return 'Nym · Connection failed'
   if (s.pending) return elapsed >= 15 ? 'Nym · Response taking longer…' : 'Nym · Waiting for response…'
