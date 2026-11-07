@@ -15,6 +15,7 @@ use anyhow::{ensure, Result};
 use zz_core::Domain;
 
 /// Operator-chosen limits, not unbounded fees accepted from the RPC provider.
+#[derive(Clone, Copy)]
 pub struct Fees {
     pub gas_limit: u64,
     pub max_fee_per_gas: u128,

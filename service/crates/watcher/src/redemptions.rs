@@ -136,8 +136,7 @@ impl Redemptions {
     pub(crate) fn check_runner_lease(&mut self) -> Result<()> {
         self.lease()
     }
-    #[cfg(feature = "unsafe-test")]
-    pub(crate) fn development_pending_hash(&mut self, id: Id) -> Result<Option<Id>> {
+    pub(crate) fn pending_hash(&mut self, id: Id) -> Result<Option<Id>> {
         let a = self.attempt(id)?;
         Ok(a.settlement
             .as_ref()
@@ -242,6 +241,19 @@ impl Redemptions {
         identity: &Identity,
         _verified_stagenet: &TrustedStagenet,
     ) -> Result<Self> {
+        store
+            .acquire_stagenet_poc_lease(policy.domain().vault)
+            .map_err(|_| anyhow::anyhow!("cooperative payout lease unavailable"))?;
+        Self::with_lease(store, policy, config, identity, _verified_stagenet)
+    }
+
+    pub(crate) fn with_lease(
+        mut store: PostgresStore,
+        policy: StagenetPocPolicy,
+        config: PayoutConfig,
+        identity: &Identity,
+        _verified_stagenet: &TrustedStagenet,
+    ) -> Result<Self> {
         ensure!(
             Id(decode(&identity.public()?.vault_id)?) == policy.domain().vault,
             "payout identity domain mismatch"
@@ -271,7 +283,7 @@ impl Redemptions {
             "stored deployment domain mismatch"
         );
         store
-            .acquire_stagenet_poc_lease(policy.domain().vault)
+            .check_stagenet_poc_lease(policy.domain().vault)
             .map_err(|_| anyhow::anyhow!("cooperative payout lease unavailable"))?;
         Ok(Self {
             store,
@@ -518,6 +530,17 @@ impl Redemptions {
             nonce,
             fees,
         )?;
+        let head: BlockObservation = evm
+            .read(ReadMethod::BlockByNumber, json!(["latest", false]))
+            .await?
+            .result;
+        let _: zz_zama::evm::Observation<Bytes> = evm
+            .read(
+                ReadMethod::Call,
+                json!([transaction.simulation_call()?,
+                {"blockHash":head.hash,"requireCanonical":true}]),
+            )
+            .await?;
         let op = EvmOperation {
             domain: self.policy.domain().clone(),
             operation_id: operation_id(

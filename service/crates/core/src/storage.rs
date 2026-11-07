@@ -5,7 +5,10 @@ use chacha20poly1305::{
 };
 use postgres::Client;
 use rand::{rngs::OsRng, RngCore};
-use std::error::Error;
+use std::{
+    error::Error,
+    sync::{Arc, Mutex},
+};
 use zeroize::Zeroizing;
 
 const AAD: &[u8] = b"cwxmr/vault-state/v1";
@@ -70,26 +73,32 @@ impl Cipher {
 ///
 /// The synchronous postgres client drives its own Tokio runtime. Every complete operation
 /// runs outside the caller's runtime, including current-thread runtimes. The caller remains
-/// blocked and exclusively borrows this store, so operations cannot overlap. The same client
-/// is retained across calls: session leases and transaction atomicity are unchanged.
+/// blocked; clones share a mutex and the same client, so complete operations cannot overlap.
+/// Mint and payout controllers therefore retain one session lease and encrypted state.
+#[derive(Clone)]
 pub struct PostgresStore {
-    session: Option<Session>,
+    session: Arc<SharedSession>,
 }
+struct SharedSession(Mutex<Option<Session>>);
 impl PostgresStore {
     /// Connect before entering async execution. TLS must terminate inside the enclave.
     pub fn new(client: Client, cipher: Cipher) -> Self {
         Self {
-            session: Some(Session::new(client, cipher)),
+            session: Arc::new(SharedSession(Mutex::new(Some(Session::new(
+                client, cipher,
+            ))))),
         }
     }
     fn run<T: Send>(
         &mut self,
         f: impl FnOnce(&mut Session) -> Result<T, Box<dyn Error + Send + Sync>> + Send,
     ) -> Result<T, Box<dyn Error + Send + Sync>> {
-        let session = self
+        let mut shared = self
             .session
-            .as_mut()
-            .expect("storage session present until drop");
+            .0
+            .lock()
+            .map_err(|_| "storage session poisoned")?;
+        let session = shared.as_mut().expect("storage session present until drop");
         std::thread::scope(|scope| match scope.spawn(move || f(session)).join() {
             Ok(result) => result,
             Err(panic) => std::panic::resume_unwind(panic),
@@ -126,9 +135,14 @@ impl PostgresStore {
         self.run(move |s| s.update(vault, f))
     }
 }
-impl Drop for PostgresStore {
+impl Drop for SharedSession {
     fn drop(&mut self) {
-        if let Some(session) = self.session.take() {
+        if let Some(session) = self
+            .0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             // Client::drop also drives its runtime. Join before returning so session locks
             // are released before another cooperative process attempts to acquire them.
             let _ = std::thread::spawn(move || drop(session)).join();

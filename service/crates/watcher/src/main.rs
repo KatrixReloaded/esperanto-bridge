@@ -21,6 +21,7 @@ use zz_watcher::{
     deposits::Deposits,
     kms::{self, Kms},
     mints::{self, Mints},
+    withdrawals::{self, Withdrawals},
 };
 
 #[derive(Deserialize)]
@@ -33,6 +34,8 @@ struct Config {
     monero: MoneroConfig,
     #[serde(default)]
     minting: Option<mints::Config>,
+    #[serde(default)]
+    withdrawals: Option<withdrawals::Config>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +64,13 @@ impl Config {
                 "minting requires an explicitly restored identity"
             );
         }
+        if let Some(withdrawals) = &self.withdrawals {
+            withdrawals.validate()?;
+            ensure!(
+                self.minting.is_some() && !self.initialize,
+                "withdrawals require the restored mint identity and deployment policy"
+            );
+        }
         Ok(())
     }
 }
@@ -80,6 +90,7 @@ fn start_sync(
     identity: Arc<Identity>,
     binding: BindingDomain,
     minting: Option<mints::Config>,
+    withdrawals: Option<withdrawals::Config>,
 ) {
     std::thread::spawn(move || {
         struct Stopped(Arc<AtomicU8>);
@@ -119,6 +130,7 @@ fn start_sync(
             },
             None => chain,
         };
+        let payout_fees = minting.as_ref().map(mints::Config::fees);
         let mints = match minting.map(Mints::new).transpose() {
             Ok(mints) => mints,
             Err(_) => return,
@@ -128,6 +140,28 @@ fn start_sync(
                 return;
             }
         }
+        let mut withdrawals = match withdrawals {
+            Some(config) => {
+                let Some(fees) = payout_fees else {
+                    return;
+                };
+                let Ok(mut deposits) = deposits.lock() else {
+                    return;
+                };
+                match runtime.block_on(Withdrawals::new(
+                    config,
+                    fees,
+                    &mut deposits,
+                    &identity,
+                    &binding,
+                    &chain,
+                )) {
+                    Ok(controller) => Some(controller),
+                    Err(_) => return,
+                }
+            }
+            None => None,
+        };
         failures = 0;
         loop {
             let result = match deposits.lock() {
@@ -145,12 +179,28 @@ fn start_sync(
                             // Serialize scan, proof and nonce allocation. A failed proof/mint stops
                             // the worker; restarting cannot implicitly resubmit a paid proof job.
                             let result = match deposits.lock() {
-                                Ok(mut deposits) => runtime.block_on(mints.step(
-                                    &mut deposits,
-                                    &identity,
-                                    &binding,
-                                    &chain,
-                                )),
+                                Ok(mut deposits) => runtime.block_on(async {
+                                    let pending_mints = deposits.pending_mints()?;
+                                    let pending_payout = match withdrawals.as_mut() {
+                                        Some(payouts) => payouts.has_pending()?,
+                                        None => false,
+                                    };
+                                    // A submitted mint is reconciled first. An existing payout
+                                    // owns the signer until completion; only then can new mint
+                                    // authorizations or another payout be scheduled.
+                                    let submitted_mint =
+                                        pending_mints.iter().any(|(_, submitted)| *submitted);
+                                    if submitted_mint
+                                        || (!pending_payout && !pending_mints.is_empty())
+                                    {
+                                        mints
+                                            .step(&mut deposits, &identity, &binding, &chain)
+                                            .await?;
+                                    } else if let Some(payouts) = withdrawals.as_mut() {
+                                        payouts.step(&identity, &binding, &chain, mints).await?;
+                                    }
+                                    Ok::<(), anyhow::Error>(())
+                                }),
                                 Err(_) => return,
                             };
                             if result.is_err() {
@@ -241,6 +291,7 @@ fn serve(
     deposits: Option<Arc<Mutex<Deposits>>>,
     sync_health: Arc<AtomicU8>,
     minting_enabled: bool,
+    withdrawals_enabled: bool,
 ) -> Result<()> {
     identity.validate_wallet()?;
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())?;
@@ -254,7 +305,7 @@ fn serve(
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!(
         "{}",
-        json!({"event":"runtime-ready","native_development":native,"identity":identity.public()?,"bridge_actions_enabled":minting_enabled,"withdrawals_enabled":false})
+        json!({"event":"runtime-ready","native_development":native,"identity":identity.public()?,"bridge_actions_enabled":minting_enabled,"withdrawals_enabled":withdrawals_enabled})
     );
     for socket in listener.incoming() {
         let socket = socket?;
@@ -287,7 +338,7 @@ fn serve(
             };
             (
                 "200 OK",
-                json!({"runtime":runtime,"native_development":native,"bridge_actions_enabled":minting_enabled && sync_health.load(Ordering::Relaxed)==1,"withdrawals_enabled":false,"monero_sync":scan,"trust_model":"trusted-stagenet-single-operator-no-rollback"}),
+                json!({"runtime":runtime,"native_development":native,"bridge_actions_enabled":minting_enabled && sync_health.load(Ordering::Relaxed)==1,"withdrawals_enabled":withdrawals_enabled && sync_health.load(Ordering::Relaxed)==1,"monero_sync":scan,"trust_model":"trusted-stagenet-single-operator-no-rollback"}),
             )
         } else if request.method == "GET" && request.target == "/identity" {
             ("200 OK", serde_json::to_value(identity.public()?)?)
@@ -382,6 +433,7 @@ fn main() -> Result<()> {
             let store = database::open(database, cipher, vault, initialized_now)?;
             let mut deposits = Deposits::open(store, &identity, &config.domain)?;
             let minting_enabled = config.minting.is_some();
+            let withdrawals_enabled = config.withdrawals.is_some();
             if let Some(minting) = &config.minting {
                 ensure!(
                     !initialized_now
@@ -401,6 +453,7 @@ fn main() -> Result<()> {
                 identity.clone(),
                 config.domain.clone(),
                 config.minting,
+                config.withdrawals,
             );
             serve(
                 identity,
@@ -410,6 +463,7 @@ fn main() -> Result<()> {
                 Some(deposits),
                 health,
                 minting_enabled,
+                withdrawals_enabled,
             )
         }
         Some("serve-dev") => {
@@ -426,6 +480,7 @@ fn main() -> Result<()> {
                 true,
                 None,
                 Arc::new(AtomicU8::new(3)),
+                false,
                 false,
             )
         }
@@ -483,6 +538,35 @@ mod tests {
                 json!(format!("0x{}", "00".repeat(32))),
             ),
             ("/minting/demo_mint_confirmations", json!(2)),
+        ] {
+            let mut invalid = value.clone();
+            *invalid.pointer_mut(path).unwrap() = replacement;
+            assert!(
+                serde_json::from_value::<Config>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{path}"
+            );
+        }
+        value["withdrawals"] = json!({
+            "assumption":"trusted-stagenet-single-operator-no-rollback",
+            "fee_terms_hash":format!("0x{}", "06".repeat(32)),
+            "fixed_fee_atomic":100,"network_fee_cap_atomic":90,
+            "max_fee_per_weight":1000,"confirmations":10,"evm_deployment_block":1
+        });
+        assert!(serde_json::from_value::<Config>(value.clone())
+            .unwrap()
+            .validate()
+            .is_ok());
+        for (path, replacement) in [
+            ("/withdrawals/assumption", json!("")),
+            ("/withdrawals/fixed_fee_atomic", json!(0)),
+            ("/withdrawals/network_fee_cap_atomic", json!(101)),
+            ("/withdrawals/confirmations", json!(3)),
+            ("/withdrawals/evm_deployment_block", json!(0)),
+            ("/minting", serde_json::Value::Null),
+            ("/initialize", json!(true)),
         ] {
             let mut invalid = value.clone();
             *invalid.pointer_mut(path).unwrap() = replacement;

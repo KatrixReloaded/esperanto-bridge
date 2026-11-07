@@ -423,7 +423,7 @@ async fn step(
                 if finalized(
                     evm,
                     redemptions
-                        .development_pending_hash(id)?
+                        .pending_hash(id)?
                         .context("claim hash missing")?,
                 )
                 .await?
@@ -454,7 +454,7 @@ async fn step(
                 if finalized(
                     evm,
                     redemptions
-                        .development_pending_hash(id)?
+                        .pending_hash(id)?
                         .context("settlement hash missing")?,
                 )
                 .await?

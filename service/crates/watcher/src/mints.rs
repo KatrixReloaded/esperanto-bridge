@@ -51,6 +51,14 @@ pub struct RevertedMintRetry {
 }
 
 impl Config {
+    pub fn fees(&self) -> Fees {
+        Fees {
+            gas_limit: self.gas_limit,
+            max_fee_per_gas: u128::from(self.max_fee_per_gas),
+            max_priority_fee_per_gas: u128::from(self.max_priority_fee_per_gas),
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.retry_expired_mint.is_none() || self.retry_reverted_mint.is_none(),
@@ -297,11 +305,7 @@ impl Mints {
                     id,
                     self.config.confirmations,
                     calldata,
-                    Fees {
-                        gas_limit: self.config.gas_limit,
-                        max_fee_per_gas: u128::from(self.config.max_fee_per_gas),
-                        max_priority_fee_per_gas: u128::from(self.config.max_priority_fee_per_gas),
-                    },
+                    self.config.fees(),
                 )
                 .await?;
             // Either outcome requires reconciliation. Never treat an RPC acknowledgement as a mint.

@@ -51,6 +51,12 @@ impl std::fmt::Display for ChainUnavailable {
 impl std::error::Error for ChainUnavailable {}
 
 impl Deposits {
+    /// Both controllers share one PostgreSQL session and the runtime's existing lease.
+    pub(crate) fn payout_store(&mut self) -> Result<PostgresStore> {
+        self.check_mint_lease()?;
+        Ok(self.store.clone())
+    }
+
     /// Cooperative single-process fence for the explicitly trusted stagenet mint runner.
     /// It does not protect against a malicious PostgreSQL operator or cloned database.
     pub fn acquire_mint_lease(&mut self) -> Result<()> {
