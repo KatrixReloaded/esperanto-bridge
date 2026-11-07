@@ -1,3 +1,4 @@
+import { WalletReadError } from '../wallet/readError'
 import { TunnelError } from '../api/nym'
 import type { BridgeInfo, DepositIntent, RedeemRecord } from '../api/types'
 export type PanelKind = 'alert' | 'info' | 'check'
@@ -38,6 +39,7 @@ export function infoBanner(info: BridgeInfo | undefined, error: unknown): InfoBa
 /** Never display arbitrary provider errors, which can contain RPC payloads or URLs. */
 export function bridgeErrorMessage(error: unknown): string | undefined {
   if (!error) return undefined
+  if (error instanceof WalletReadError) return `Wallet RPC failed at ${error.stage}${error.rpcCodes.length ? ` (RPC code ${error.rpcCodes.join(', ')})` : ' (no RPC code)'}. Check the Sepolia RPC configured in MetaMask; finalized verification remains required.`
   const message = error instanceof Error ? error.message : ''
   if (message === 'MetaMask is not installed') return 'Enable MetaMask for this site, then connect your Sepolia wallet.'
   if (message === 'Sepolia wallet required') return 'Switch MetaMask to Ethereum Sepolia, then retry.'

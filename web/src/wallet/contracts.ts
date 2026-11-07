@@ -4,6 +4,7 @@ import type { BridgeInfo, RedeemRecord } from '../api/types'
 import { toAtomic } from '../lib/amount'
 import { isRedeemId } from '../lib/validate'
 import { metamask, type Eip1193Provider } from './metamask'
+import { walletRead } from './readError'
 
 export const READ_ABI = parseAbi([
   'function token() view returns (address)', 'function registry() view returns (address)',
@@ -13,15 +14,17 @@ export const READ_ABI = parseAbi([
 const HEX32 = /^0x[0-9a-fA-F]{64}$/
 const quantity = (n: bigint) => `0x${n.toString(16)}`
 export async function finalizedHead(p: Eip1193Provider) {
-  if (await p.request({ method: 'eth_chainId' }) !== '0xaa36a7') throw new Error('Sepolia wallet required')
-  const head = await p.request({ method: 'eth_getBlockByNumber', params: ['finalized', false] }) as { hash?: string; number?: string } | null
+  if (await walletRead('chain ID (eth_chainId)', () => p.request({ method: 'eth_chainId' })) !== '0xaa36a7') throw new Error('Sepolia wallet required')
+  const head = await walletRead('finalized head (eth_getBlockByNumber)', () => p.request({ method: 'eth_getBlockByNumber', params: ['finalized', false] })) as { hash?: string; number?: string } | null
   if (!head || !HEX32.test(head.hash ?? '') || !/^0x[0-9a-f]+$/i.test(head.number ?? '')) throw new Error('Finalized RPC head unavailable')
   return { hash: head.hash as Hex, number: BigInt(head.number!) }
 }
 async function read(p: Eip1193Provider, at: Hex, to: string, functionName: 'token' | 'registry' | 'decimals' | 'authorized' | 'redemptions', args?: readonly unknown[]): Promise<unknown> {
-  const data = encodeFunctionData({ abi: READ_ABI, functionName, args } as Parameters<typeof encodeFunctionData>[0])
-  const value = await p.request({ method: 'eth_call', params: [{ to, data }, { blockHash: at, requireCanonical: true }] }) as Hex
-  return decodeFunctionResult({ abi: READ_ABI, functionName, data: value })
+  return walletRead(`${functionName} getter (eth_call, canonical block hash)`, async () => {
+    const data = encodeFunctionData({ abi: READ_ABI, functionName, args } as Parameters<typeof encodeFunctionData>[0])
+    const value = await p.request({ method: 'eth_call', params: [{ to, data }, { blockHash: at, requireCanonical: true }] }) as Hex
+    return decodeFunctionResult({ abi: READ_ABI, functionName, data: value })
+  })
 }
 /** Reads are explicit observations of the user's trusted wallet RPC, not consensus verification. */
 export async function readBridge(p = metamask.provider()): Promise<BridgeInfo> {
@@ -37,7 +40,7 @@ export async function readBridge(p = metamask.provider()): Promise<BridgeInfo> {
   const ids = new Set<Hex>()
   for (let from = start; from <= head.number; from += 256n) {
     const to = from + 255n < head.number ? from + 255n : head.number
-    const logs = await p.request({ method: 'eth_getLogs', params: [{ address: registry, fromBlock: quantity(from), toBlock: quantity(to), topics: [toEventSelector('VaultDiscovered(bytes32,address,address,uint64)')] }] }) as { address: string; topics: string[]; removed?: boolean }[]
+    const logs = await walletRead('vault discovery (eth_getLogs, 256-block pages)', () => p.request({ method: 'eth_getLogs', params: [{ address: registry, fromBlock: quantity(from), toBlock: quantity(to), topics: [toEventSelector('VaultDiscovered(bytes32,address,address,uint64)')] }] })) as { address: string; topics: string[]; removed?: boolean }[]
     if (!Array.isArray(logs) || logs.length > 256) throw new Error('Invalid discovery response')
     for (const log of logs) {
       if (log.removed || log.address.toLowerCase() !== registry.toLowerCase() || !HEX32.test(log.topics?.[1] ?? '')) throw new Error('Invalid discovery log')

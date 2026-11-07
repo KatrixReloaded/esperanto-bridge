@@ -1,5 +1,6 @@
 import { decodeFunctionResult, encodeFunctionData, getAddress, keccak256, parseAbi, type Hex } from 'viem'
 import { API_BASE, BRIDGE_ADDRESS, REGISTRY_ADDRESS, REGISTRY_CODE_HASH, VAULT_ID } from '../config'
+import { walletRead } from './readError'
 import { finalizedHead } from './contracts'
 import { metamask, type Eip1193Provider } from './metamask'
 
@@ -17,16 +18,16 @@ export async function readAttestedPeer(p: Eip1193Provider = metamask.provider())
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || !hex32.test(REGISTRY_CODE_HASH) || !hex32.test(VAULT_ID)) throw new Error('Enclave verification is not configured')
   const registry = getAddress(REGISTRY_ADDRESS)
   const head = await finalizedHead(p)
-  const block = await p.request({ method: 'eth_getBlockByHash', params: [head.hash, false] }) as { hash?: string; timestamp?: string } | null
+  const block = await walletRead('authority timestamp (eth_getBlockByHash)', () => p.request({ method: 'eth_getBlockByHash', params: [head.hash, false] })) as { hash?: string; timestamp?: string } | null
   if (!block || block.hash?.toLowerCase() !== head.hash.toLowerCase() || !/^0x[0-9a-f]+$/i.test(block.timestamp ?? '')) throw new Error('Invalid finalized block')
   const age = BigInt(Math.floor(Date.now() / 1000)) - BigInt(block.timestamp!)
   if (age < -30n || age > 1200n) throw new Error('Finalized authority is stale')
   const at = { blockHash: head.hash, requireCanonical: true }
-  const code = await p.request({ method: 'eth_getCode', params: [registry, at] }) as Hex
+  const code = await walletRead('registry bytecode (eth_getCode, canonical block hash)', () => p.request({ method: 'eth_getCode', params: [registry, at] })) as Hex
   if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(code) || keccak256(code).toLowerCase() !== REGISTRY_CODE_HASH.toLowerCase()) throw new Error('Registry code differs from its pin')
   async function read(to: string, name: 'registry' | 'authorized' | 'vaults', args?: readonly unknown[]): Promise<unknown> {
     const data = encodeFunctionData({ abi, functionName: name, args } as Parameters<typeof encodeFunctionData>[0])
-    const result = await p.request({ method: 'eth_call', params: [{ to, data }, at] }) as Hex
+    const result = await walletRead(`authority ${name} (eth_call, canonical block hash)`, () => p.request({ method: 'eth_call', params: [{ to, data }, at] })) as Hex
     return decodeFunctionResult({ abi, functionName: name, data: result })
   }
   if (getAddress(String(await read(getAddress(BRIDGE_ADDRESS), 'registry'))) !== registry) throw new Error('Bridge registry mismatch')

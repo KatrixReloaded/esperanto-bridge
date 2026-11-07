@@ -6,6 +6,8 @@ import { MAX_ATOMIC } from '../lib/amount'
 import { readBridge, readRedemption } from '../wallet/contracts'
 import { metamask } from '../wallet/metamask'
 import { getJson, postJson } from './http'
+import { WalletReadError } from '../wallet/readError'
+import { bridgeErrorMessage } from '../lib/status'
 import { nym } from './nym'
 import type { BridgeApi, DepositIntent, Health, PrepareRequest } from './types'
 const hex32 = /^0x[0-9a-fA-F]{64}$/
@@ -43,7 +45,7 @@ export const liveApi: BridgeApi = {
       info.withdrawals_ready = healthy && info.terms_configured && h.withdrawals_enabled === true
       if (!info.scanner_ready) info.readiness_reason = 'Deposit processing is unavailable.'
       else info.readiness_reason = ''
-    } catch { info.readiness_reason = `Backend health unavailable. ${LIVE_BLOCKER}` }
+    } catch (error) { info.readiness_reason = error instanceof WalletReadError ? bridgeErrorMessage(error)! : `Backend health unavailable. ${LIVE_BLOCKER}` }
     return info
   },
   async createDepositIntent(recipient, nonce, signal) {

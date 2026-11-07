@@ -15,7 +15,7 @@ export function Banner({ kind, onSwitchNetwork, errorDetail }: { kind: BannerKey
   const [k, title, detail] = BANNERS[kind]
   return (
     <div className="banner-wrap">
-      <Panel kind={k} title={title} detail={kind === 'unavail' && errorDetail ? errorDetail : detail}>
+      <Panel kind={k} title={title} detail={(kind === 'unavail' || kind === 'notready') && errorDetail ? errorDetail : detail}>
         {kind === 'nym' && <button type="button" className="btn btn-p btn-sm" onClick={() => location.reload()}>Reload</button>}
         {kind === 'wrongnet' && <button type="button" className="btn btn-p btn-sm" onClick={onSwitchNetwork}>Switch to Sepolia</button>}
       </Panel>
